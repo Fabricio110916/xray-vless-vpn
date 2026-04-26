@@ -7,56 +7,77 @@ jobs:
     steps:
       - checkout
       - run:
-          name: Instalar Go 1.22
+          name: Baixar Xray Core pré-compilado
           command: |
-            cd /tmp
-            wget -q https://go.dev/dl/go1.22.10.linux-amd64.tar.gz
-            sudo tar -C /usr/local -xzf go1.22.10.linux-amd64.tar.gz
-            export PATH=/usr/local/go/bin:$PATH
-            go version
-      - run:
-          name: Compilar Xray Core
-          command: |
-            export PATH=/usr/local/go/bin:$PATH
-            export GOPATH=$HOME/go
-            export PATH=$GOPATH/bin:$PATH
+            mkdir -p app/libs
             
-            # Instalar gomobile com versão compatível
-            go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20231127183840-76d4a6d75e67
+            # Baixar Xray Core Android (versão mais recente)
+            XRAY_VERSION="1.8.23"
             
-            # Inicializar gomobile
-            gomobile init 2>/dev/null || true
+            echo "Baixando Xray Core v${XRAY_VERSION}..."
             
-            # Clonar e compilar Xray
-            git clone --depth 1 https://github.com/XTLS/Xray-core.git /tmp/xray
-            cd /tmp/xray
+            # URLs das bibliotecas por arquitetura
+            BASE_URL="https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}"
             
-            # Criar diretório de saída
-            mkdir -p $HOME/project/app/libs
+            # Baixar para cada arquitetura e criar estrutura
+            for ARCH in armeabi-v7a arm64-v8a x86 x86_64; do
+              mkdir -p app/src/main/jniLibs/$ARCH
+              
+              case $ARCH in
+                armeabi-v7a)
+                  ZIP="Xray-android-arm32-v7a.zip"
+                  ;;
+                arm64-v8a)
+                  ZIP="Xray-android-arm64-v8a.zip"
+                  ;;
+                x86)
+                  ZIP="Xray-android-x86.zip"
+                  ;;
+                x86_64)
+                  ZIP="Xray-android-x86_64.zip"
+                  ;;
+              esac
+              
+              echo "Baixando $ARCH..."
+              wget -q "${BASE_URL}/${ZIP}" -O /tmp/${ZIP} || {
+                echo "Falha ao baixar $ZIP, tentando URL alternativa..."
+                wget -q "https://github.com/xtls/xray-core/releases/download/v${XRAY_VERSION}/${ZIP}" -O /tmp/${ZIP}
+              }
+              
+              if [ -f "/tmp/${ZIP}" ]; then
+                unzip -q -o /tmp/${ZIP} -d /tmp/xray_${ARCH}
+                cp /tmp/xray_${ARCH}/libxray.so app/src/main/jniLibs/$ARCH/ 2>/dev/null || true
+                echo "✅ $ARCH OK"
+              else
+                echo "⚠️  $ARCH indisponivel"
+              fi
+            done
             
-            # Compilar para Android
-            gomobile bind \
-              -v \
-              -target=android \
-              -androidapi 21 \
-              -o $HOME/project/app/libs/xray.aar \
-              -ldflags="-s -w -buildid=" \
-              ./core
-            
-            echo "✅ Xray Core compilado!"
-            ls -la $HOME/project/app/libs/
+            # Verificar
+            echo ""
+            echo "Bibliotecas disponiveis:"
+            find app/src/main/jniLibs -name "*.so" -type f
       - run:
           name: Compilar APK
           command: |
             chmod +x gradlew
             ./gradlew assembleDebug --no-daemon
       - run:
-          name: Verificar APK
+          name: Verificar APK gerado
           command: |
-            find app/build/outputs -name "*.apk" -type f -exec ls -la {} \;
+            echo "APKs gerados:"
+            find app/build/outputs -name "*.apk" -type f -exec ls -lh {} \;
       - store_artifacts:
           path: app/build/outputs/apk/debug/
           destination: apk/
+      - run:
+          name: Listar conteúdo do APK
+          command: |
+            APK=$(find app/build/outputs -name "*.apk" | head -1)
+            if [ -f "$APK" ]; then
+              echo "APK: $APK"
+              unzip -l "$APK" | grep "\.so" || echo "Nenhum .so encontrado no APK"
+            fi
 
 workflows:
   version: 2

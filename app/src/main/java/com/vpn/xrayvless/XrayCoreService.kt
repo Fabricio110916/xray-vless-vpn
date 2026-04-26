@@ -8,7 +8,7 @@ import java.io.FileOutputStream
 class XrayCoreService(private val context: Context) {
 
     companion object {
-        const val SOCKS_PORT = 10808
+        const val DOKODEMO_PORT = 10808
     }
 
     private var isRunning = false
@@ -26,7 +26,6 @@ class XrayCoreService(private val context: Context) {
             val configFile = File(configDir, "config.json")
             configFile.writeText(json)
             LogManager.addLog("✅ Config salva (${json.length} chars)")
-            LogManager.addLog("JSON gerado:\n$json")
 
             copyAssets(configDir)
 
@@ -46,16 +45,19 @@ class XrayCoreService(private val context: Context) {
                     
                     process = pb.start()
                     isRunning = true
-                    LogManager.addLog("✅ Xray iniciado (SOCKS:$SOCKS_PORT)")
+                    LogManager.addLog("✅ Xray rodando (dokodemo:$DOKODEMO_PORT)")
 
                     launch {
                         try {
                             process?.inputStream?.bufferedReader()?.use { reader ->
                                 var count = 0
                                 reader.lines().forEach { line ->
-                                    if (line.isNotBlank() && count < 30) {
+                                    if (line.isNotBlank() && count < 50) {
                                         count++
-                                        LogManager.addLog("X: $line")
+                                        // Só mostrar erros/warnings importantes
+                                        if (line.contains("started") || line.contains("Error") || line.contains("Failed")) {
+                                            LogManager.addLog("X: $line")
+                                        }
                                     }
                                 }
                             }
@@ -71,7 +73,7 @@ class XrayCoreService(private val context: Context) {
                 }
             }
 
-            Thread.sleep(2500)
+            Thread.sleep(2000)
             return isRunning
 
         } catch (e: Exception) {
@@ -86,14 +88,15 @@ class XrayCoreService(private val context: Context) {
         sb.appendLine("  \"log\": {")
         sb.appendLine("    \"loglevel\": \"warning\"")
         sb.appendLine("  },")
+        // Usar dokodemo-door em vez de SOCKS para tráfego IP puro
         sb.appendLine("  \"inbounds\": [{")
-        sb.appendLine("    \"tag\": \"socks-in\",")
-        sb.appendLine("    \"port\": $SOCKS_PORT,")
+        sb.appendLine("    \"tag\": \"vpn-in\",")
+        sb.appendLine("    \"port\": $DOKODEMO_PORT,")
         sb.appendLine("    \"listen\": \"127.0.0.1\",")
-        sb.appendLine("    \"protocol\": \"socks\",")
+        sb.appendLine("    \"protocol\": \"dokodemo-door\",")
         sb.appendLine("    \"settings\": {")
-        sb.appendLine("      \"auth\": \"noauth\",")
-        sb.appendLine("      \"udp\": true")
+        sb.appendLine("      \"network\": \"tcp,udp\",")
+        sb.appendLine("      \"followRedirect\": true")
         sb.appendLine("    }")
         sb.appendLine("  }],")
         sb.appendLine("  \"outbounds\": [{")
@@ -141,7 +144,14 @@ class XrayCoreService(private val context: Context) {
         sb.appendLine("  }, {")
         sb.appendLine("    \"tag\": \"direct\",")
         sb.appendLine("    \"protocol\": \"freedom\"")
-        sb.appendLine("  }]")
+        sb.appendLine("  }],")
+        sb.appendLine("  \"routing\": {")
+        sb.appendLine("    \"rules\": [{")
+        sb.appendLine("      \"type\": \"field\",")
+        sb.appendLine("      \"inboundTag\": [\"vpn-in\"],")
+        sb.appendLine("      \"outboundTag\": \"proxy\"")
+        sb.appendLine("    }]")
+        sb.appendLine("  }")
         sb.appendLine("}")
         
         return sb.toString()
@@ -152,7 +162,6 @@ class XrayCoreService(private val context: Context) {
             val nativeLib = File(context.applicationInfo.nativeLibraryDir, "libxray.so")
             if (nativeLib.exists()) {
                 nativeLib.setExecutable(true, false)
-                LogManager.addLog("Usando native dir")
                 return nativeLib.absolutePath
             }
         } catch (e: Exception) {}
@@ -167,10 +176,7 @@ class XrayCoreService(private val context: Context) {
                     context.assets.open(name).use { input ->
                         dest.outputStream().use { output -> input.copyTo(output) }
                     }
-                    LogManager.addLog("✅ $name")
-                } catch (e: Exception) {
-                    LogManager.addLog("⚠️ $name: ${e.message}")
-                }
+                } catch (e: Exception) {}
             }
         }
     }

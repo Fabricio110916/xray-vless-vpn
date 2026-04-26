@@ -11,43 +11,16 @@ android {
         applicationId "com.vpn.xrayvless"
         minSdk 21
         targetSdk 34
-        versionCode System.getenv("CIRCLE_BUILD_NUM")?.toInteger() ?: 1
-        versionName "1.0.${System.getenv("CIRCLE_BUILD_NUM") ?: '1'}"
-        
-        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
-        
-        buildConfigField "String", "BUILD_DATE", "\"${new Date().format('yyyy-MM-dd HH:mm')}\""
-        buildConfigField "String", "BUILD_NUMBER", "\"${System.getenv("CIRCLE_BUILD_NUM") ?: 'local'}\""
-    }
-
-    signingConfigs {
-        release {
-            if (System.getenv("CIRCLE_CI") == "true") {
-                storeFile rootProject.file("app/keystore.jks")
-                storePassword System.getenv("KEYSTORE_PASSWORD")
-                keyAlias System.getenv("KEY_ALIAS")
-                keyPassword System.getenv("KEY_PASSWORD")
-            }
-        }
+        versionCode 1
+        versionName "1.0"
     }
 
     buildTypes {
         debug {
-            applicationIdSuffix ".debug"
-            versionNameSuffix "-debug"
-            debuggable true
             minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
-        
         release {
-            minifyEnabled true
-            shrinkResources true
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            
-            if (signingConfigs.release.storeFile != null) {
-                signingConfig signingConfigs.release
-            }
+            minifyEnabled false
         }
     }
     
@@ -59,11 +32,6 @@ android {
     kotlinOptions {
         jvmTarget = '1.8'
     }
-    
-    lint {
-        abortOnError false
-        checkReleaseBuilds false
-    }
 }
 
 dependencies {
@@ -71,33 +39,6 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
-    
-    // Coroutines
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
-    
-    // JSON parsing
     implementation 'com.google.code.gson:gson:2.10.1'
-    
-    // X-ray Core - biblioteca real
-    // implementation 'com.github.xtls:libxray:1.8.21'
-    
-    // Testes
-    testImplementation 'junit:junit:4.13.2'
-    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
-    androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
-}
-
-task generateBuildInfo {
-    doLast {
-        def buildInfo = """
-            Build Information:
-            =================
-            Build Number: ${System.getenv("CIRCLE_BUILD_NUM") ?: 'local'}
-            Build Date: ${new Date().format('yyyy-MM-dd HH:mm:ss')}
-            Branch: ${System.getenv("CIRCLE_BRANCH") ?: 'local'}
-            Commit: ${System.getenv("CIRCLE_SHA1") ?: 'local'}
-        """.stripIndent()
-        
-        println buildInfo
-    }
 }

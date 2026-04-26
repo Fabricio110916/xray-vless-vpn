@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/ic_launcher_background"/>
+    <item>
+        <inset
+            android:drawable="@drawable/ic_chave_vpn"
+            android:inset="25%"/>
+    </item>
+</layer-list>

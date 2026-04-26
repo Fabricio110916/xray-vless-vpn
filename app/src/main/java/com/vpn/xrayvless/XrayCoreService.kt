@@ -4,6 +4,7 @@ import android.content.Context
 import kotlinx.coroutines.*
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 
 class XrayCoreService(private val context: Context) {
 
@@ -15,6 +16,38 @@ class XrayCoreService(private val context: Context) {
     private var job: Job? = null
     private var process: Process? = null
 
+    private fun copyAssetIfNeeded(srcName: String, destDir: File, destName: String): Boolean {
+        val dest = File(destDir, destName)
+        if (dest.exists()) return true
+        
+        return try {
+            // Tentar copiar do mesmo diretório da libxray.so
+            val nativeDir = File(context.applicationInfo.nativeLibraryDir)
+            val src = File(nativeDir, srcName)
+            
+            if (src.exists()) {
+                LogManager.addLog("Copiando $srcName de $nativeDir")
+                src.inputStream().use { input ->
+                    FileOutputStream(dest).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                LogManager.addLog("✅ $destName: ${dest.length()} bytes")
+                true
+            } else {
+                LogManager.addLog("⚠️ $srcName não encontrado em $nativeDir")
+                // Listar o que tem no diretório
+                nativeDir.listFiles()?.forEach {
+                    LogManager.addLog("  ${it.name} (${it.length()})")
+                }
+                false
+            }
+        } catch (e: Exception) {
+            LogManager.addLog("❌ Erro ao copiar $srcName: ${e.message}")
+            false
+        }
+    }
+
     fun start(config: VlessConfig): Boolean {
         if (isRunning) return false
 
@@ -22,55 +55,53 @@ class XrayCoreService(private val context: Context) {
             val configDir = File(context.filesDir, "xray")
             configDir.mkdirs()
 
-            // Salvar config
+            // 1. Copiar executável xray
+            val xrayBin = File(configDir, "xray")
+            if (!xrayBin.exists()) {
+                val nativeLib = File(context.applicationInfo.nativeLibraryDir, "libxray.so")
+                if (nativeLib.exists()) {
+                    LogManager.addLog("Copiando executável (${nativeLib.length()} bytes)")
+                    nativeLib.inputStream().use { input ->
+                        FileOutputStream(xrayBin).use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    xrayBin.setExecutable(true, false)
+                    xrayBin.setReadable(true)
+                    LogManager.addLog("✅ xray: ${xrayBin.length()} bytes, exec=${xrayBin.canExecute()}")
+                } else {
+                    LogManager.addLog("❌ libxray.so não encontrada")
+                    return false
+                }
+            }
+
+            // 2. Copiar geosite.dat e geoip.dat
+            copyAssetIfNeeded("geosite.dat", configDir, "geosite.dat")
+            copyAssetIfNeeded("geoip.dat", configDir, "geoip.dat")
+
+            // 3. Salvar config.json
             val json = buildConfigJson(config)
             val configFile = File(configDir, "config.json")
             configFile.writeText(json)
-            LogManager.addLog("Config salva em: ${configFile.absolutePath}")
+            LogManager.addLog("Config JSON salva (${json.length} chars)")
 
-            // Copiar libxray.so para diretório com permissão
-            val nativeDir = File(context.applicationInfo.nativeLibraryDir)
-            val xraySo = File(nativeDir, "libxray.so")
-            val xrayBin = File(configDir, "xray")
-
-            if (!xrayBin.exists() && xraySo.exists()) {
-                LogManager.addLog("Copiando libxray.so -> xray...")
-                xraySo.copyTo(xrayBin, overwrite = true)
-                
-                // CORREÇÃO: Garantir permissão de execução
-                val success = xrayBin.setExecutable(true, false)  // owner only
-                LogManager.addLog("setExecutable = $success")
-                xrayBin.setReadable(true)
-                xrayBin.setWritable(false)
-                
-                LogManager.addLog("Permissões: r=${xrayBin.canRead()} w=${xrayBin.canWrite()} x=${xrayBin.canExecute()}")
-                LogManager.addLog("Tamanho: ${xrayBin.length()} bytes")
-            }
-
-            if (!xrayBin.exists() || !xrayBin.canExecute()) {
-                LogManager.addLog("❌ Binário não executável! existe=${xrayBin.exists()} exec=${xrayBin.canExecute()}")
-                
-                // Tentar alternativa: executar direto da lib
-                if (xraySo.exists()) {
-                    xraySo.setExecutable(true, false)
-                    LogManager.addLog("Tentando lib original: exec=${xraySo.canExecute()}")
-                }
+            if (!xrayBin.canExecute()) {
+                LogManager.addLog("❌ xray não executável")
                 return false
             }
 
-            LogManager.addLog("✅ Binário pronto: ${xrayBin.absolutePath}")
+            LogManager.addLog("✅ Todos os arquivos prontos")
 
             job = CoroutineScope(Dispatchers.IO).launch {
                 try {
-                    // Usar /bin/sh -c para garantir execução
-                    val cmd = arrayOf(
-                        "/system/bin/sh", "-c",
-                        "cd ${configDir.absolutePath} && chmod 755 ./xray && ./xray run -config ${configFile.absolutePath}"
+                    val commands = arrayOf(
+                        xrayBin.absolutePath, "run",
+                        "-config", configFile.absolutePath
                     )
                     
-                    LogManager.addLog("Executando: ${cmd.joinToString(" ")}")
+                    LogManager.addLog("Executando: ${xrayBin.absolutePath}")
                     
-                    val pb = ProcessBuilder(*cmd)
+                    val pb = ProcessBuilder(*commands)
                         .directory(configDir)
                         .redirectErrorStream(true)
                     
@@ -78,37 +109,37 @@ class XrayCoreService(private val context: Context) {
                     isRunning = true
                     LogManager.addLog("✅ Processo Xray iniciado")
 
-                    // Ler saída
+                    // Ler logs do Xray em tempo real
                     launch {
                         try {
                             process?.inputStream?.bufferedReader()?.use { reader ->
-                                var line: String?
-                                while (reader.readLine().also { line = it } != null) {
-                                    val l = line!!
-                                    if (l.isNotBlank()) {
-                                        LogManager.addLog("XRAY: $l")
+                                reader.lines().forEach { line ->
+                                    if (line.isNotBlank()) {
+                                        LogManager.addLog("X: $line")
                                     }
                                 }
                             }
                         } catch (e: Exception) {
-                            LogManager.addLog("XRAY log err: ${e.message}")
+                            LogManager.addLog("Log: ${e.message}")
                         }
                     }
 
                     val exit = process?.waitFor() ?: -1
-                    LogManager.addLog("Xray finalizado: código $exit")
+                    LogManager.addLog("Xray encerrado: código $exit")
                     isRunning = false
                 } catch (e: Exception) {
-                    LogManager.addLog("❌ Erro processo: ${e.message}")
+                    LogManager.addLog("❌ Processo: ${e.message}")
                     isRunning = false
                 }
             }
 
-            Thread.sleep(2000)
+            // Aguardar iniciar
+            Thread.sleep(2500)
+            LogManager.addLog("Status: isRunning=$isRunning")
             return isRunning
 
         } catch (e: Exception) {
-            LogManager.addLog("❌ Erro geral: ${e.message}")
+            LogManager.addLog("❌ Erro: ${e.message}")
             return false
         }
     }
@@ -121,11 +152,9 @@ class XrayCoreService(private val context: Context) {
     }
 
     private fun buildConfigJson(c: VlessConfig): String {
-        val root = JSONObject()
-        root.put("log", JSONObject().apply { put("loglevel", "warning") })
-        
-        root.put("inbounds", listOf(
-            JSONObject().apply {
+        return JSONObject().apply {
+            put("log", JSONObject().apply { put("loglevel", "warning") })
+            put("inbounds", listOf(JSONObject().apply {
                 put("tag", "socks-in")
                 put("port", SOCKS_PORT)
                 put("listen", "127.0.0.1")
@@ -134,74 +163,50 @@ class XrayCoreService(private val context: Context) {
                     put("auth", "noauth")
                     put("udp", true)
                 })
-            }
-        ))
-        
-        // VLESS outbound
-        val vless = JSONObject()
-        vless.put("protocol", "vless")
-        vless.put("tag", "proxy")
-        vless.put("settings", JSONObject().apply {
-            put("vnext", listOf(JSONObject().apply {
-                put("address", c.server)
-                put("port", c.port)
-                put("users", listOf(JSONObject().apply {
-                    put("id", c.uuid)
-                    put("encryption", c.encryption)
-                    if (c.flow.isNotEmpty()) put("flow", c.flow)
+            }))
+            put("outbounds", listOf(
+                JSONObject().apply {
+                    put("tag", "proxy")
+                    put("protocol", "vless")
+                    put("settings", JSONObject().apply {
+                        put("vnext", listOf(JSONObject().apply {
+                            put("address", c.server)
+                            put("port", c.port)
+                            put("users", listOf(JSONObject().apply {
+                                put("id", c.uuid)
+                                put("encryption", c.encryption)
+                                if (c.flow.isNotEmpty()) put("flow", c.flow)
+                            }))
+                        }))
+                    })
+                    put("streamSettings", JSONObject().apply {
+                        put("network", c.type)
+                        put("security", c.security)
+                        if (c.type == "xhttp") {
+                            put("xhttpSettings", JSONObject().apply {
+                                put("mode", c.mode)
+                                put("path", c.path)
+                                if (c.host.isNotEmpty()) put("host", c.host)
+                            })
+                        }
+                        if (c.security == "tls") {
+                            put("tlsSettings", JSONObject().apply {
+                                put("serverName", c.sni.ifEmpty { c.server })
+                                put("allowInsecure", c.insecure || c.allowInsecure)
+                                if (c.alpn.isNotEmpty()) put("alpn", c.alpn.split(",").map { it.trim() })
+                            })
+                        }
+                    })
+                },
+                JSONObject().apply { put("protocol", "freedom") }
+            ))
+            put("routing", JSONObject().apply {
+                put("rules", listOf(JSONObject().apply {
+                    put("type", "field")
+                    put("inboundTag", listOf("socks-in"))
+                    put("outboundTag", "proxy")
                 }))
-            }))
-        })
-        
-        // Stream settings
-        val stream = JSONObject()
-        stream.put("network", c.type)
-        stream.put("security", c.security)
-        
-        if (c.type == "xhttp") {
-            stream.put("xhttpSettings", JSONObject().apply {
-                put("mode", c.mode)
-                put("path", c.path)
-                if (c.host.isNotEmpty()) put("host", c.host)
             })
-        } else if (c.type == "ws") {
-            stream.put("wsSettings", JSONObject().apply {
-                put("path", c.path)
-                if (c.host.isNotEmpty()) put("headers", JSONObject().apply {
-                    put("Host", c.host)
-                })
-            })
-        }
-        
-        if (c.security == "tls") {
-            stream.put("tlsSettings", JSONObject().apply {
-                put("serverName", c.sni.ifEmpty { c.server })
-                put("allowInsecure", c.insecure || c.allowInsecure)
-                if (c.alpn.isNotEmpty()) {
-                    val alpnList = c.alpn.split(",").map { it.trim() }
-                    put("alpn", alpnList.joinToString("|") { it })
-                }
-            })
-        }
-        
-        vless.put("streamSettings", stream)
-        
-        root.put("outbounds", listOf(
-            vless,
-            JSONObject().apply {
-                put("tag", "direct")
-                put("protocol", "freedom")
-            }
-        ))
-        
-        root.put("routing", JSONObject().apply {
-            put("rules", listOf(JSONObject().apply {
-                put("type", "field")
-                put("inboundTag", listOf("socks-in"))
-                put("outboundTag", "proxy")
-            }))
-        })
-        
-        return root.toString(2)
+        }.toString(2)
     }
 }

@@ -1,143 +1,41 @@
 version: 2.1
 
 orbs:
-  android: circleci/android@2.3.0
+  android: circleci/android@2.4.0
 
 jobs:
-  build-and-test:
-    executor:
-      name: android/android-machine
-      resource-class: medium
-      tag: 2023.11.1
-    
+  build-debug:
+    docker:
+      - image: cimg/android:2024.01.1
     steps:
       - checkout
-      
-      - android/restore-gradle-cache:
-          cache-prefix: v1
-      
       - run:
-          name: Setup Android SDK
-          command: |
-            yes | sdkmanager --licenses || true
-            sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-            sdkmanager --update
-            
+          name: Aceitar licenças
+          command: yes | sdkmanager --licenses || true
       - run:
-          name: Check Java Version
-          command: java -version
-          
-      - run:
-          name: Create local properties
-          command: |
-            echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
-            
-      - run:
-          name: Build Debug APK
-          command: |
-            ./gradlew assembleDebug --stacktrace
-            
-      - run:
-          name: Run Tests
-          command: |
-            ./gradlew testDebugUnitTest --stacktrace
-            
-      - android/save-gradle-cache:
-          cache-prefix: v1
-          
+          name: Compilar APK Debug
+          command: ./gradlew assembleDebug --stacktrace
       - store_artifacts:
           path: app/build/outputs/apk/debug/
           destination: apks/
-          
-      - store_artifacts:
-          path: app/build/reports/
-          destination: reports/
-          
-      - store_test_results:
-          path: app/build/test-results/
 
   build-release:
-    executor:
-      name: android/android-machine
-      resource-class: medium
-      tag: 2023.11.1
-      
+    docker:
+      - image: cimg/android:2024.01.1
     steps:
       - checkout
-      
-      - android/restore-gradle-cache:
-          cache-prefix: v1-release
-      
       - run:
-          name: Setup Android SDK
-          command: |
-            yes | sdkmanager --licenses || true
-            sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-            sdkmanager --update
-      
+          name: Aceitar licenças
+          command: yes | sdkmanager --licenses || true
       - run:
-          name: Decode Keystore
-          command: |
-            if [ -n "${KEYSTORE_BASE64}" ]; then
-              echo $KEYSTORE_BASE64 | base64 -d > app/keystore.jks
-            fi
-      
-      - run:
-          name: Build Release APK
-          command: |
-            if [ -n "${KEYSTORE_BASE64}" ]; then
-              ./gradlew assembleRelease \
-                -Pandroid.injected.signing.store.file=app/keystore.jks \
-                -Pandroid.injected.signing.store.password=$KEYSTORE_PASSWORD \
-                -Pandroid.injected.signing.key.alias=$KEY_ALIAS \
-                -Pandroid.injected.signing.key.password=$KEY_PASSWORD \
-                --stacktrace
-            else
-              ./gradlew assembleDebug --stacktrace
-            fi
-      
-      - android/save-gradle-cache:
-          cache-prefix: v1-release
-      
+          name: Compilar APK Release
+          command: ./gradlew assembleDebug --stacktrace
       - store_artifacts:
-          path: app/build/outputs/apk/
+          path: app/build/outputs/apk/debug/
           destination: apks/
-      
-      - run:
-          name: Upload to GitHub Releases
-          command: |
-            if [ -n "${GITHUB_TOKEN}" ] && [ "${CIRCLE_BRANCH}" == "main" ]; then
-              APK_FILE=$(find app/build/outputs/apk -name "*.apk" | head -1)
-              VERSION="v1.0.${CIRCLE_BUILD_NUM}"
-              
-              curl -X POST \
-                -H "Authorization: token $GITHUB_TOKEN" \
-                -H "Content-Type: application/json" \
-                -d "{
-                  \"tag_name\": \"$VERSION\",
-                  \"target_commitish\": \"main\",
-                  \"name\": \"Release $VERSION\",
-                  \"body\": \"Build automática via CircleCI #${CIRCLE_BUILD_NUM}\",
-                  \"draft\": false,
-                  \"prerelease\": false
-                }" \
-                https://api.github.com/repos/$CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME/releases
-            fi
 
 workflows:
   version: 2
-  
-  build-and-deploy:
+  build:
     jobs:
-      - build-and-test:
-          filters:
-            branches:
-              ignore: main
-      
-      - build-release:
-          filters:
-            branches:
-              only: main
-          context:
-            - keystore-credentials
-            - github-token
+      - build-debug

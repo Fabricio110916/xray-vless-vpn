@@ -4,12 +4,14 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import com.google.gson.Gson
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -48,9 +50,20 @@ class XrayVpnService : VpnService() {
     override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
         try {
             LogManager.addLog(">>> onStartCommand")
-            startForeground(1, NotificationCompat.Builder(this, "x")
-                .setContentTitle("XRAY VPN").setContentText("Conectando...")
-                .setSmallIcon(R.drawable.ic_chave_vpn).setOngoing(true).build())
+            
+            val notification = NotificationCompat.Builder(this, "x")
+                .setContentTitle("XRAY VPN")
+                .setContentText("Conectando...")
+                .setSmallIcon(R.drawable.ic_chave_vpn)
+                .setOngoing(true)
+                .build()
+            
+            // Usar startForeground compatível com Android 14+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else {
+                startForeground(1, notification)
+            }
 
             val json = i?.getStringExtra("vless_config")
             if (json == null) {
@@ -61,47 +74,40 @@ class XrayVpnService : VpnService() {
             
             LogManager.addLog("JSON: ${json.take(80)}...")
             
-            // Parse config
             val c: VlessConfig
             try {
                 c = Gson().fromJson(json, VlessConfig::class.java)
-                LogManager.addLog("✅ Parse OK: ${c.type} ${c.server}:${c.port}")
+                LogManager.addLog("✅ Parse: ${c.type} ${c.server}:${c.port}")
             } catch (e: Exception) {
-                LogManager.addLog("❌ Erro Gson: ${e.message}")
+                LogManager.addLog("❌ Gson: ${e.message}")
                 stopSelf()
                 return START_NOT_STICKY
             }
             
-            // Criar Xray
             try {
-                LogManager.addLog("Criando XrayCoreService...")
                 xray = XrayCoreService(this)
-                LogManager.addLog("✅ XrayCoreService criado")
+                LogManager.addLog("✅ Xray criado")
             } catch (e: Exception) {
-                LogManager.addLog("❌ Erro criar Xray: ${e.message}")
+                LogManager.addLog("❌ Xray criar: ${e.message}")
                 stopSelf()
                 return START_NOT_STICKY
             }
             
-            // Iniciar Xray
             try {
-                LogManager.addLog("Iniciando Xray...")
                 val ok = xray!!.start(c)
-                LogManager.addLog("Xray.start() = $ok")
+                LogManager.addLog("Xray.start = $ok")
                 if (!ok) {
-                    LogManager.addLog("❌ Xray não iniciou")
+                    LogManager.addLog("❌ Xray falhou")
                     stopSelf()
                     return START_NOT_STICKY
                 }
             } catch (e: Exception) {
-                LogManager.addLog("❌ Erro Xray.start: ${e.message}")
+                LogManager.addLog("❌ Xray.start: ${e.message}")
                 stopSelf()
                 return START_NOT_STICKY
             }
             
-            // Criar VPN
             try {
-                LogManager.addLog("Criando VPN builder...")
                 val builder = Builder()
                     .setSession(c.remark)
                     .addAddress("10.0.0.2", 24)
@@ -112,16 +118,15 @@ class XrayVpnService : VpnService() {
                 
                 try {
                     builder.addDisallowedApplication(packageName)
-                    LogManager.addLog("✅ App excluído da VPN")
+                    LogManager.addLog("✅ App excluído")
                 } catch (e: Exception) {
-                    LogManager.addLog("⚠️ Não excluiu app: ${e.message}")
+                    LogManager.addLog("⚠️ Excluir: ${e.message}")
                 }
                 
-                LogManager.addLog("Chamando establish()...")
                 vpn = builder.establish()
                 
                 if (vpn == null) {
-                    LogManager.addLog("❌ establish retornou null")
+                    LogManager.addLog("❌ establish null")
                     stopSelf()
                     return START_NOT_STICKY
                 }
@@ -129,35 +134,32 @@ class XrayVpnService : VpnService() {
                 LogManager.addLog("✅ VPN estabelecida")
                 running = true
                 
-                // Proteger socket SOCKS
                 try {
                     val sock = Socket()
                     sock.connect(InetSocketAddress("127.0.0.1", XrayCoreService.SOCKS_PORT), 3000)
                     protect(sock)
                     sock.close()
-                    LogManager.addLog("✅ SOCKS protegido")
+                    LogManager.addLog("✅ SOCKS ok")
                 } catch (e: Exception) {
                     LogManager.addLog("⚠️ SOCKS: ${e.message}")
                 }
                 
-                // Iniciar loop
                 thread = Thread({ loop() }, "VPN").also {
                     it.setUncaughtExceptionHandler { _, ex ->
-                        LogManager.addLog("❌ Thread crash: ${ex.message}")
+                        LogManager.addLog("❌ Thread: ${ex.message}")
                     }
                     it.start()
                 }
-                LogManager.addLog("✅ Loop iniciado")
+                LogManager.addLog("✅ Thread VPN")
                 
             } catch (e: Exception) {
-                LogManager.addLog("❌ Erro VPN: ${e.message}")
-                LogManager.addLog("Stack: ${e.stackTraceToString().take(150)}")
+                LogManager.addLog("❌ VPN: ${e.message}")
                 stopSelf()
                 return START_NOT_STICKY
             }
             
         } catch (e: Exception) {
-            LogManager.addLog("❌ ERRO GLOBAL: ${e.message}")
+            LogManager.addLog("❌ GLOBAL: ${e.message}")
             stopSelf()
         }
         
@@ -166,7 +168,7 @@ class XrayVpnService : VpnService() {
 
     private fun loop() {
         try {
-            LogManager.addLog("Loop começou")
+            LogManager.addLog("Loop rodando")
             val input = FileInputStream(vpn!!.fileDescriptor)
             val output = FileOutputStream(vpn!!.fileDescriptor)
             val buffer = ByteArray(32767)
@@ -184,18 +186,16 @@ class XrayVpnService : VpnService() {
                             protect(sock)
                             sock.getOutputStream().write(buffer, 0, len)
                             sock.close()
-                        } catch (e: Exception) {
-                            // ignora pacotes que não consegue rotear
-                        }
+                        } catch (e: Exception) {}
                     }
                 } catch (e: InterruptedException) { break }
                 catch (e: Exception) {
-                    if (running) LogManager.addLog("Loop err: ${e.message}")
+                    if (running) LogManager.addLog("Loop: ${e.message}")
                 }
             }
-            LogManager.addLog("Loop fim: $count pacotes")
+            LogManager.addLog("Fim: $count pacotes")
         } catch (e: Exception) {
-            LogManager.addLog("❌ Loop fatal: ${e.message}")
+            LogManager.addLog("❌ Loop: ${e.message}")
         }
     }
 

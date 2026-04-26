@@ -133,7 +133,7 @@ class XrayVpnService : VpnService() {
                             try {
                                 val xraySocket = Socket()
                                 xraySocket.soTimeout = 10000  // 10 segundos timeout
-                                xraySocket.connect(InetSocketAddress("127.0.0.1", XrayCoreService.DOKODEMO_PORT), 5000)
+                                xraySocket.connect(InetSocketAddress("127.0.0.1", XrayCoreService.SOCKS_PORT), 5000)
                                 protect(xraySocket)
                                 
                                 // Enviar dados para o Xray

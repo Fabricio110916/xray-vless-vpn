@@ -10,18 +10,24 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.google.gson.Gson
-import kotlinx.coroutines.*
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.nio.ByteBuffer
+import java.nio.channels.DatagramChannel
+import java.nio.channels.SocketChannel
 
 class XrayVpnService : VpnService() {
 
     private val binder = LocalBinder()
     private var vpnInterface: ParcelFileDescriptor? = null
     private var isRunning = false
-    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var vpnThread: Thread? = null
+    private var xrayCore: XrayCoreService? = null
     
     inner class LocalBinder : Binder() {
         fun getService(): XrayVpnService = this@XrayVpnService
@@ -33,7 +39,9 @@ class XrayVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
+        Log.d(TAG, "XrayVpnService criado")
         createNotificationChannel()
+        xrayCore = XrayCoreService(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -41,102 +49,164 @@ class XrayVpnService : VpnService() {
         startForeground(NOTIFICATION_ID, notification)
         
         intent?.getStringExtra("vless_config")?.let { configJson ->
-            val vlessConfig = Gson().fromJson(configJson, VlessConfig::class.java)
-            startVpnConnection(vlessConfig)
+            try {
+                val config = Gson().fromJson(configJson, VlessConfig::class.java)
+                Log.d(TAG, "Config carregada - Tipo: ${config.type}")
+                
+                // Iniciar Xray Core
+                val xrayStarted = xrayCore?.start(config) ?: false
+                if (xrayStarted) {
+                    Log.d(TAG, "✅ Xray Core iniciado, iniciando VPN...")
+                    startVpnConnection(config)
+                } else {
+                    Log.e(TAG, "❌ Falha ao iniciar Xray Core")
+                    stopSelf()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Erro: ${e.message}", e)
+                stopSelf()
+            }
         }
         
         return START_STICKY
     }
 
     private fun startVpnConnection(config: VlessConfig) {
-        serviceScope.launch {
-            try {
-                val builder = Builder()
-                    .setSession(config.remark)
-                    .addAddress("10.0.0.2", 24)
-                    .addDnsServer("1.1.1.1")
-                    .addDnsServer("8.8.8.8")
-                    .addRoute("0.0.0.0", 0)
-                    .setMtu(1500)
-                    
-                vpnInterface = builder.establish()
+        try {
+            val builder = Builder()
+                .setSession("XRAY ${config.remark}")
+                .addAddress("10.0.0.2", 24)
+                .addDnsServer("8.8.8.8")
+                .addDnsServer("1.1.1.1")
+                .addRoute("0.0.0.0", 0)
+                .setMtu(1500)
+                .setBlocking(true)
                 
-                if (vpnInterface != null) {
-                    isRunning = true
-                    runXrayCore(config)
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                stopSelf()
+            vpnInterface = builder.establish()
+            
+            if (vpnInterface != null) {
+                isRunning = true
+                Log.d(TAG, "VPN estabelecida")
+                
+                vpnThread = Thread({
+                    protectSocket()
+                    processPackets(config)
+                }, "VPN-Thread")
+                
+                vpnThread?.start()
+                updateNotification("Conectado: ${config.server} | ${config.type}")
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Erro ao estabelecer VPN: ${e.message}", e)
+            stopSelf()
         }
     }
 
-    private fun runXrayCore(config: VlessConfig) {
-        serviceScope.launch {
-            try {
-                while (isRunning) {
-                    vpnInterface?.let { pfd ->
-                        val inputStream = FileInputStream(pfd.fileDescriptor)
-                        val outputStream = FileOutputStream(pfd.fileDescriptor)
+    private fun protectSocket() {
+        try {
+            // Proteger socket do Xray para evitar loop
+            val socket = Socket()
+            socket.connect(InetSocketAddress("127.0.0.1", 10808), 1000)
+            protect(socket)
+            socket.close()
+            Log.d(TAG, "Socket SOCKS protegido")
+        } catch (e: Exception) {
+            Log.w(TAG, "Aviso ao proteger socket: ${e.message}")
+        }
+    }
+
+    private fun processPackets(config: VlessConfig) {
+        try {
+            val inputStream = FileInputStream(vpnInterface!!.fileDescriptor)
+            val outputStream = FileOutputStream(vpnInterface!!.fileDescriptor)
+            val buffer = ByteArray(32767)
+            var packetCount = 0
+            
+            Log.d(TAG, "Processando pacotes...")
+            
+            while (isRunning) {
+                try {
+                    val length = inputStream.read(buffer)
+                    if (length > 0) {
+                        packetCount++
+                        if (packetCount % 50 == 0) {
+                            Log.d(TAG, "?? $packetCount pacotes processados")
+                        }
                         
-                        val buffer = ByteArray(32767)
-                        var length: Int
-                        
-                        while (inputStream.read(buffer).also { length = it } != -1) {
-                            outputStream.write(buffer, 0, length)
+                        // Encaminhar para o proxy SOCKS do Xray
+                        try {
+                            val proxySocket = Socket()
+                            proxySocket.connect(InetSocketAddress("127.0.0.1", 10808), 5000)
+                            protect(proxySocket)
+                            
+                            proxySocket.getOutputStream().write(buffer, 0, length)
+                            
+                            val response = ByteArray(32767)
+                            val responseLength = proxySocket.getInputStream().read(response)
+                            if (responseLength > 0) {
+                                outputStream.write(response, 0, responseLength)
+                            }
+                            
+                            proxySocket.close()
+                        } catch (e: Exception) {
+                            Log.v(TAG, "Pacote descartado: ${e.message}")
                         }
                     }
-                    delay(100)
+                } catch (e: InterruptedException) {
+                    break
+                } catch (e: Exception) {
+                    if (isRunning) Log.e(TAG, "Erro: ${e.message}")
+                    break
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
+            Log.d(TAG, "Total de pacotes: $packetCount")
+        } catch (e: Exception) {
+            Log.e(TAG, "Erro fatal: ${e.message}", e)
         }
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                CHANNEL_ID,
-                "XRAY VPN Status",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Status da conexão VPN XRAY"
-            }
-            
-            val notificationManager = getSystemService(NotificationManager::class.java)
-            notificationManager.createNotificationChannel(channel)
+                CHANNEL_ID, "XRAY VPN", NotificationManager.IMPORTANCE_LOW
+            ).apply { description = "Status VPN XRAY" }
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
 
     private fun createNotification(): Notification {
-        val pendingIntent = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-        
+        val pi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("XRAY VLESS VPN")
-            .setContentText("VPN Conectada")
+            .setContentText("Conectando...")
             .setSmallIcon(R.drawable.ic_chave_vpn)
-            .setContentIntent(pendingIntent)
+            .setContentIntent(pi)
             .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
 
+    private fun updateNotification(text: String) {
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("XRAY VLESS VPN")
+            .setContentText(text)
+            .setSmallIcon(R.drawable.ic_chave_vpn)
+            .setOngoing(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification)
+    }
+
     override fun onDestroy() {
-        super.onDestroy()
+        Log.d(TAG, "Parando servico...")
         isRunning = false
-        vpnInterface?.close()
-        serviceScope.cancel()
+        vpnThread?.interrupt()
+        xrayCore?.stop()
+        try { vpnInterface?.close() } catch (e: Exception) {}
+        super.onDestroy()
     }
 
     companion object {
+        private const val TAG = "XrayVpnService"
         private const val NOTIFICATION_ID = 1
-        private const val CHANNEL_ID = "xray_vpn_channel"
+        private const val CHANNEL_ID = "xray_vpn"
     }
 }

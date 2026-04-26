@@ -41,12 +41,6 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         
-        initViews()
-        setupListeners()
-        bindVpnService()
-    }
-
-    private fun initViews() {
         configEditText = findViewById(R.id.configEditText)
         importButton = findViewById(R.id.importButton)
         pasteButton = findViewById(R.id.pasteButton)
@@ -54,6 +48,9 @@ class MainActivity : AppCompatActivity() {
         statusText = findViewById(R.id.statusText)
         statusIndicator = findViewById(R.id.statusIndicator)
         trafficText = findViewById(R.id.trafficText)
+        
+        setupListeners()
+        bindVpnService()
     }
 
     private fun setupListeners() {
@@ -62,7 +59,7 @@ class MainActivity : AppCompatActivity() {
             if (configText.isNotEmpty()) {
                 processVlessConfig(configText)
             } else {
-                Toast.makeText(this, "Cole uma configuração VLESS primeiro!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Cole uma configuracao VLESS primeiro!", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -72,9 +69,9 @@ class MainActivity : AppCompatActivity() {
             if (clip != null && clip.itemCount > 0) {
                 val pastedText = clip.getItemAt(0).text.toString()
                 configEditText.setText(pastedText)
-                Toast.makeText(this, "Configuração colada! Clique em Importar", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Configuracao colada! Clique em Importar", Toast.LENGTH_SHORT).show()
             } else {
-                Toast.makeText(this, "Nada na área de transferência!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Nada na area de transferencia!", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -92,10 +89,10 @@ class MainActivity : AppCompatActivity() {
             if (configUrl.startsWith("vless://")) {
                 val vlessConfig = parseVlessUrl(configUrl)
                 saveConfigToPreferences(vlessConfig)
-                Toast.makeText(this, "Configuração VLESS importada com sucesso!", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Configuracao VLESS importada com sucesso!", Toast.LENGTH_LONG).show()
                 updateUIAfterImport()
             } else {
-                Toast.makeText(this, "URL VLESS inválida!", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "URL VLESS invalida!", Toast.LENGTH_LONG).show()
             }
         } catch (e: Exception) {
             Toast.makeText(this, "Erro: ${e.message}", Toast.LENGTH_LONG).show()
@@ -173,7 +170,7 @@ class MainActivity : AppCompatActivity() {
         val configJson = prefs.getString("vless_config", null)
         
         if (configJson == null) {
-            Toast.makeText(this, "Importe uma configuração VLESS primeiro!", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Importe uma configuracao VLESS primeiro!", Toast.LENGTH_SHORT).show()
             return
         }
         
@@ -213,12 +210,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == VPN_REQUEST_CODE) {
-            if (resultCode == Activity.RESULT_OK) {
-                startVpnService()
-            } else {
-                Toast.makeText(this, "Permissão VPN negada!", Toast.LENGTH_SHORT).show()
-            }
+        if (requestCode == VPN_REQUEST_CODE && resultCode == Activity.RESULT_OK) {
+            startVpnService()
         }
     }
 

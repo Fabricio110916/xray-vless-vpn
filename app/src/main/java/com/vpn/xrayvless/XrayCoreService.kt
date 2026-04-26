@@ -3,12 +3,11 @@ package com.vpn.xrayvless
 import android.content.Context
 import kotlinx.coroutines.*
 import java.io.File
-import java.io.FileOutputStream
 
 class XrayCoreService(private val context: Context) {
 
     companion object {
-        const val DOKODEMO_PORT = 10808
+        const val SOCKS_PORT = 10808
     }
 
     private var isRunning = false
@@ -25,7 +24,7 @@ class XrayCoreService(private val context: Context) {
             val json = buildXrayJson(config)
             val configFile = File(configDir, "config.json")
             configFile.writeText(json)
-            LogManager.addLog("✅ Config salva")
+            LogManager.addLog("✅ Config completa salva")
 
             copyAssets(configDir)
 
@@ -35,8 +34,6 @@ class XrayCoreService(private val context: Context) {
                 return false
             }
 
-            LogManager.addLog("✅ Executável pronto")
-
             job = CoroutineScope(Dispatchers.IO).launch {
                 try {
                     val pb = ProcessBuilder(xrayPath, "run", "-config", configFile.absolutePath)
@@ -45,30 +42,24 @@ class XrayCoreService(private val context: Context) {
                     
                     process = pb.start()
                     isRunning = true
-                    LogManager.addLog("✅ Xray rodando (dokodemo:$DOKODEMO_PORT)")
+                    LogManager.addLog("✅ Xray SOCKS5 rodando")
 
                     launch {
-                        try {
-                            process?.inputStream?.bufferedReader()?.use { reader ->
-                                var count = 0
-                                reader.lines().forEach { line ->
-                                    if (line.isNotBlank() && count < 20) {
-                                        // Só mostrar coisas importantes
-                                        if (line.contains("started") || line.contains("Failed") || line.contains("Error") && !line.contains("loopback")) {
-                                            count++
-                                            LogManager.addLog("X: $line")
-                                        }
-                                    }
+                        process?.inputStream?.bufferedReader()?.use { reader ->
+                            var count = 0
+                            reader.lines().forEach { line ->
+                                if (line.isNotBlank() && count < 5) {
+                                    count++
+                                    LogManager.addLog("X: $line")
                                 }
                             }
-                        } catch (e: Exception) {}
+                        }
                     }
 
-                    val exit = process?.waitFor() ?: -1
-                    LogManager.addLog("Xray fim: $exit")
+                    process?.waitFor()
                     isRunning = false
                 } catch (e: Exception) {
-                    LogManager.addLog("❌ Processo: ${e.message}")
+                    LogManager.addLog("❌ ${e.message}")
                     isRunning = false
                 }
             }
@@ -83,82 +74,135 @@ class XrayCoreService(private val context: Context) {
     }
 
     private fun buildXrayJson(c: VlessConfig): String {
-        val sb = StringBuilder()
-        sb.appendLine("{")
-        sb.appendLine("  \"log\": {")
-        sb.appendLine("    \"loglevel\": \"error\"")
-        sb.appendLine("  },")
-        sb.appendLine("  \"inbounds\": [{")
-        sb.appendLine("    \"tag\": \"vpn-in\",")
-        sb.appendLine("    \"port\": $DOKODEMO_PORT,")
-        sb.appendLine("    \"listen\": \"127.0.0.1\",")
-        sb.appendLine("    \"protocol\": \"dokodemo-door\",")
-        sb.appendLine("    \"settings\": {")
-        sb.appendLine("      \"network\": \"tcp,udp\",")
-        sb.appendLine("      \"followRedirect\": true")
-        sb.appendLine("    },")
-        // Desabilitar detecção de loopback
-        sb.appendLine("    \"sniffing\": {")
-        sb.appendLine("      \"enabled\": false,")
-        sb.appendLine("      \"destOverride\": []")
-        sb.appendLine("    }")
-        sb.appendLine("  }],")
-        sb.appendLine("  \"outbounds\": [{")
-        sb.appendLine("    \"tag\": \"proxy\",")
-        sb.appendLine("    \"protocol\": \"vless\",")
-        sb.appendLine("    \"settings\": {")
-        sb.appendLine("      \"vnext\": [{")
-        sb.appendLine("        \"address\": \"${c.server}\",")
-        sb.appendLine("        \"port\": ${c.port},")
-        sb.appendLine("        \"users\": [{")
-        sb.appendLine("          \"id\": \"${c.uuid}\",")
-        sb.appendLine("          \"encryption\": \"${c.encryption}\"")
-        if (c.flow.isNotEmpty()) {
-            sb.appendLine("          ,\"flow\": \"${c.flow}\"")
+        return """
+{
+  "dns": {
+    "hosts": {
+      "ofertas.tim.com.br": ["177.135.216.197", "177.135.216.202"]
+    },
+    "servers": ["1.1.1.1", "8.8.8.8"]
+  },
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": $SOCKS_PORT,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": true,
+        "userLevel": 8
+      },
+      "sniffing": {
+        "destOverride": ["http", "tls"],
+        "enabled": true,
+        "routeOnly": false
+      },
+      "tag": "socks"
+    }
+  ],
+  "outbounds": [
+    {
+      "mux": {
+        "concurrency": -1,
+        "enabled": false
+      },
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "${c.server}",
+            "port": ${c.port},
+            "users": [
+              {
+                "encryption": "${c.encryption}",
+                "flow": "${c.flow}",
+                "id": "${c.uuid}",
+                "level": 8
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "${c.type}",
+        "security": "${c.security}",
+        "sockopt": {
+          "domainStrategy": "UseIP"
+        },
+        "tlsSettings": {
+          "allowInsecure": ${c.insecure || c.allowInsecure},
+          "alpn": [${c.alpn.split(",").joinToString(", ") { "\"${it.trim()}\"" }}],
+          "fingerprint": "${c.fp}",
+          "serverName": "${c.sni.ifEmpty { c.server }}",
+          "show": false
+        },
+        "xhttpSettings": {
+          "host": "${c.host}",
+          "mode": "${c.mode}",
+          "path": "${c.path}"
         }
-        sb.appendLine("        }]")
-        sb.appendLine("      }]")
-        sb.appendLine("    },")
-        sb.appendLine("    \"streamSettings\": {")
-        sb.appendLine("      \"network\": \"${c.type}\",")
-        sb.appendLine("      \"security\": \"${c.security}\"")
-        
-        if (c.type == "xhttp") {
-            sb.appendLine("      ,\"xhttpSettings\": {")
-            sb.appendLine("        \"mode\": \"${c.mode}\",")
-            sb.appendLine("        \"path\": \"${c.path}\"")
-            if (c.host.isNotEmpty()) {
-                sb.appendLine("        ,\"host\": \"${c.host}\"")
-            }
-            sb.appendLine("      }")
+      },
+      "tag": "proxy"
+    },
+    {
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "UseIP"
+      },
+      "tag": "direct"
+    },
+    {
+      "protocol": "blackhole",
+      "settings": {
+        "response": {
+          "type": "http"
         }
-        
-        if (c.security == "tls") {
-            sb.appendLine("      ,\"tlsSettings\": {")
-            sb.appendLine("        \"serverName\": \"${c.sni.ifEmpty { c.server }}\",")
-            sb.appendLine("        \"allowInsecure\": ${c.insecure || c.allowInsecure}")
-            if (c.alpn.isNotEmpty()) {
-                val alpnArray = c.alpn.split(",").map { "\"${it.trim()}\"" }.joinToString(", ")
-                sb.appendLine("        ,\"alpn\": [$alpnArray]")
-            }
-            sb.appendLine("      }")
-        }
-        
-        sb.appendLine("    }")
-        sb.appendLine("  }, {")
-        sb.appendLine("    \"tag\": \"direct\",")
-        sb.appendLine("    \"protocol\": \"freedom\"")
-        sb.appendLine("  }],")
-        sb.appendLine("  \"routing\": {")
-        sb.appendLine("    \"rules\": [{")
-        sb.appendLine("      \"type\": \"field\",")
-        sb.appendLine("      \"inboundTag\": [\"vpn-in\"],")
-        sb.appendLine("      \"outboundTag\": \"proxy\"")
-        sb.appendLine("    }]")
-        sb.appendLine("  }")
-        sb.appendLine("}")
-        
-        return sb.toString()
+      },
+      "tag": "block"
+    }
+  ],
+  "policy": {
+    "levels": {
+      "8": {
+        "connIdle": 300,
+        "downlinkOnly": 1,
+        "handshake": 4,
+        "uplinkOnly": 1
+      }
+    },
+    "system": {
+      "statsOutboundUplink": true,
+      "statsOutboundDownlink": true
+    }
+  },
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": ["socks"],
+        "outboundTag": "proxy"
+      },
+      {
+        "type": "field",
+        "ip": ["1.1.1.1"],
+        "outboundTag": "proxy",
+        "port": "53"
+      },
+      {
+        "type": "field",
+        "ip": ["8.8.8.8"],
+        "outboundTag": "direct",
+        "port": "53"
+      }
+    ]
+  },
+  "stats": {}
+}
+""".trimIndent()
     }
 
     private fun findXrayExecutable(configDir: File): String? {

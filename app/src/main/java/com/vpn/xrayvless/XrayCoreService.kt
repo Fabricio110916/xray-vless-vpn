@@ -16,38 +16,6 @@ class XrayCoreService(private val context: Context) {
     private var job: Job? = null
     private var process: Process? = null
 
-    private fun copyAssetIfNeeded(srcName: String, destDir: File, destName: String): Boolean {
-        val dest = File(destDir, destName)
-        if (dest.exists()) return true
-        
-        return try {
-            // Tentar copiar do mesmo diretório da libxray.so
-            val nativeDir = File(context.applicationInfo.nativeLibraryDir)
-            val src = File(nativeDir, srcName)
-            
-            if (src.exists()) {
-                LogManager.addLog("Copiando $srcName de $nativeDir")
-                src.inputStream().use { input ->
-                    FileOutputStream(dest).use { output ->
-                        input.copyTo(output)
-                    }
-                }
-                LogManager.addLog("✅ $destName: ${dest.length()} bytes")
-                true
-            } else {
-                LogManager.addLog("⚠️ $srcName não encontrado em $nativeDir")
-                // Listar o que tem no diretório
-                nativeDir.listFiles()?.forEach {
-                    LogManager.addLog("  ${it.name} (${it.length()})")
-                }
-                false
-            }
-        } catch (e: Exception) {
-            LogManager.addLog("❌ Erro ao copiar $srcName: ${e.message}")
-            false
-        }
-    }
-
     fun start(config: VlessConfig): Boolean {
         if (isRunning) return false
 
@@ -55,92 +23,190 @@ class XrayCoreService(private val context: Context) {
             val configDir = File(context.filesDir, "xray")
             configDir.mkdirs()
 
-            // 1. Copiar executável xray
-            val xrayBin = File(configDir, "xray")
-            if (!xrayBin.exists()) {
-                val nativeLib = File(context.applicationInfo.nativeLibraryDir, "libxray.so")
-                if (nativeLib.exists()) {
-                    LogManager.addLog("Copiando executável (${nativeLib.length()} bytes)")
-                    nativeLib.inputStream().use { input ->
-                        FileOutputStream(xrayBin).use { output ->
-                            input.copyTo(output)
-                        }
-                    }
-                    xrayBin.setExecutable(true, false)
-                    xrayBin.setReadable(true)
-                    LogManager.addLog("✅ xray: ${xrayBin.length()} bytes, exec=${xrayBin.canExecute()}")
-                } else {
-                    LogManager.addLog("❌ libxray.so não encontrada")
-                    return false
-                }
-            }
-
-            // 2. Copiar geosite.dat e geoip.dat
-            copyAssetIfNeeded("geosite.dat", configDir, "geosite.dat")
-            copyAssetIfNeeded("geoip.dat", configDir, "geoip.dat")
-
-            // 3. Salvar config.json
+            // Salvar config.json
             val json = buildConfigJson(config)
             val configFile = File(configDir, "config.json")
             configFile.writeText(json)
-            LogManager.addLog("Config JSON salva (${json.length} chars)")
+            LogManager.addLog("✅ Config salva (${json.length} chars)")
 
-            if (!xrayBin.canExecute()) {
-                LogManager.addLog("❌ xray não executável")
+            // Copiar assets
+            copyAssets(configDir)
+
+            // Encontrar executável
+            val xrayPath = findXrayExecutable(configDir)
+            if (xrayPath == null) {
+                LogManager.addLog("❌ Xray não encontrado")
                 return false
             }
 
-            LogManager.addLog("✅ Todos os arquivos prontos")
+            LogManager.addLog("✅ Executável: $xrayPath")
 
             job = CoroutineScope(Dispatchers.IO).launch {
                 try {
-                    val commands = arrayOf(
-                        xrayBin.absolutePath, "run",
-                        "-config", configFile.absolutePath
-                    )
-                    
-                    LogManager.addLog("Executando: ${xrayBin.absolutePath}")
-                    
-                    val pb = ProcessBuilder(*commands)
-                        .directory(configDir)
-                        .redirectErrorStream(true)
-                    
-                    process = pb.start()
-                    isRunning = true
-                    LogManager.addLog("✅ Processo Xray iniciado")
-
-                    // Ler logs do Xray em tempo real
-                    launch {
+                    // Método 1: ProcessBuilder direto
+                    try {
+                        LogManager.addLog("Método 1: ProcessBuilder direto...")
+                        val pb = ProcessBuilder(xrayPath, "run", "-config", configFile.absolutePath)
+                            .directory(configDir)
+                            .redirectErrorStream(true)
+                        
+                        process = pb.start()
+                        isRunning = true
+                        LogManager.addLog("✅ Xray iniciado (SOCKS:$SOCKS_PORT)")
+                    } catch (e1: Exception) {
+                        LogManager.addLog("Método 1 falhou: ${e1.message}")
+                        
+                        // Método 2: Via shell
                         try {
-                            process?.inputStream?.bufferedReader()?.use { reader ->
-                                reader.lines().forEach { line ->
-                                    if (line.isNotBlank()) {
-                                        LogManager.addLog("X: $line")
-                                    }
-                                }
+                            LogManager.addLog("Método 2: Via shell...")
+                            val pb = ProcessBuilder(
+                                "sh", "-c",
+                                "cd ${configDir.absolutePath} && $xrayPath run -config ${configFile.absolutePath}"
+                            ).redirectErrorStream(true)
+                            
+                            process = pb.start()
+                            isRunning = true
+                            LogManager.addLog("✅ Xray iniciado via shell")
+                        } catch (e2: Exception) {
+                            LogManager.addLog("Método 2 falhou: ${e2.message}")
+                            
+                            // Método 3: Runtime.exec
+                            try {
+                                LogManager.addLog("Método 3: Runtime.exec...")
+                                process = Runtime.getRuntime().exec(
+                                    arrayOf(xrayPath, "run", "-config", configFile.absolutePath),
+                                    null, configDir
+                                )
+                                isRunning = true
+                                LogManager.addLog("✅ Xray iniciado via Runtime")
+                            } catch (e3: Exception) {
+                                LogManager.addLog("❌ Todos os métodos falharam!")
                             }
-                        } catch (e: Exception) {
-                            LogManager.addLog("Log: ${e.message}")
                         }
                     }
 
-                    val exit = process?.waitFor() ?: -1
-                    LogManager.addLog("Xray encerrado: código $exit")
-                    isRunning = false
+                    // Se conseguiu iniciar, ler logs
+                    if (isRunning && process != null) {
+                        launch {
+                            try {
+                                process?.inputStream?.bufferedReader()?.use { reader ->
+                                    var count = 0
+                                    reader.lines().forEach { line ->
+                                        if (line.isNotBlank() && count < 30) {
+                                            count++
+                                            LogManager.addLog("X: $line")
+                                        }
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                LogManager.addLog("Log: ${e.message}")
+                            }
+                        }
+
+                        val exit = process?.waitFor() ?: -1
+                        LogManager.addLog("Xray fim: $exit")
+                        isRunning = false
+                    }
                 } catch (e: Exception) {
-                    LogManager.addLog("❌ Processo: ${e.message}")
+                    LogManager.addLog("❌ Fatal: ${e.message}")
                     isRunning = false
                 }
             }
 
-            // Aguardar iniciar
             Thread.sleep(2500)
-            LogManager.addLog("Status: isRunning=$isRunning")
+            LogManager.addLog("isRunning=$isRunning")
             return isRunning
 
         } catch (e: Exception) {
-            LogManager.addLog("❌ Erro: ${e.message}")
+            LogManager.addLog("❌ ${e.message}")
             return false
+        }
+    }
+
+    private fun findXrayExecutable(configDir: File): String? {
+        // Método A: Direto do nativeLibraryDir (maior chance de funcionar)
+        try {
+            val nativeLib = File(context.applicationInfo.nativeLibraryDir, "libxray.so")
+            if (nativeLib.exists() && nativeLib.canRead()) {
+                nativeLib.setExecutable(true, false)
+                LogManager.addLog("Método A: native dir - ${nativeLib.absolutePath}")
+                return nativeLib.absolutePath
+            }
+        } catch (e: Exception) {
+            LogManager.addLog("Método A falhou: ${e.message}")
+        }
+
+        // Método B: Copiar para configDir e dar permissão
+        try {
+            val nativeLib = File(context.applicationInfo.nativeLibraryDir, "libxray.so")
+            if (nativeLib.exists()) {
+                val xrayBin = File(configDir, "xray")
+                LogManager.addLog("Método B: copiando para ${xrayBin.absolutePath}")
+                
+                nativeLib.inputStream().use { input ->
+                    FileOutputStream(xrayBin).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                
+                // Verificar permissões
+                val chmodResult = Runtime.getRuntime().exec(
+                    arrayOf("chmod", "755", xrayBin.absolutePath)
+                ).waitFor()
+                
+                LogManager.addLog("  chmod result=$chmodResult exec=${xrayBin.canExecute()}")
+                
+                if (xrayBin.canExecute() || chmodResult == 0) {
+                    return xrayBin.absolutePath
+                }
+            }
+        } catch (e: Exception) {
+            LogManager.addLog("Método B falhou: ${e.message}")
+        }
+
+        // Método C: Copiar para cache dir
+        try {
+            val nativeLib = File(context.applicationInfo.nativeLibraryDir, "libxray.so")
+            if (nativeLib.exists()) {
+                val cacheBin = File(context.cacheDir, "xray")
+                LogManager.addLog("Método C: copiando para cache")
+                
+                nativeLib.inputStream().use { input ->
+                    FileOutputStream(cacheBin).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                
+                Runtime.getRuntime().exec(arrayOf("chmod", "755", cacheBin.absolutePath)).waitFor()
+                
+                if (cacheBin.canExecute()) {
+                    return cacheBin.absolutePath
+                }
+            }
+        } catch (e: Exception) {
+            LogManager.addLog("Método C falhou: ${e.message}")
+        }
+
+        return null
+    }
+
+    private fun copyAssets(configDir: File) {
+        listOf("geosite.dat", "geoip.dat").forEach { name ->
+            val dest = File(configDir, name)
+            if (!dest.exists()) {
+                try {
+                    context.assets.open(name).use { input ->
+                        dest.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    LogManager.addLog("✅ $name (${dest.length()} bytes)")
+                } catch (e: Exception) {
+                    LogManager.addLog("⚠️ $name: ${e.message}")
+                }
+            } else {
+                LogManager.addLog("✅ $name já existe (${dest.length()} bytes)")
+            }
         }
     }
 
@@ -148,7 +214,6 @@ class XrayCoreService(private val context: Context) {
         isRunning = false
         process?.destroy()
         job?.cancel()
-        LogManager.addLog("Xray parado")
     }
 
     private fun buildConfigJson(c: VlessConfig): String {
@@ -200,13 +265,6 @@ class XrayCoreService(private val context: Context) {
                 },
                 JSONObject().apply { put("protocol", "freedom") }
             ))
-            put("routing", JSONObject().apply {
-                put("rules", listOf(JSONObject().apply {
-                    put("type", "field")
-                    put("inboundTag", listOf("socks-in"))
-                    put("outboundTag", "proxy")
-                }))
-            })
         }.toString(2)
     }
 }

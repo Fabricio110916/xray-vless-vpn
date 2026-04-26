@@ -10,11 +10,18 @@ jobs:
           name: Dar permissão ao gradlew
           command: chmod +x gradlew
       - run:
-          name: Compilar APK
-          command: ./gradlew assembleDebug
+          name: Verificar versão do Java
+          command: java -version
+      - run:
+          name: Compilar APK Debug
+          command: ./gradlew assembleDebug --no-daemon --stacktrace
       - store_artifacts:
           path: app/build/outputs/apk/debug/
           destination: apk/
+      - run:
+          name: Listar APK gerado
+          command: |
+            find app/build/outputs -name "*.apk" -type f
 
 workflows:
   version: 2

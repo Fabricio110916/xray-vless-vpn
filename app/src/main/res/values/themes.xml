@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.XrayVlessVPN" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+    <style name="Tema.XrayVlessVPN" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="colorPrimary">#e94560</item>
         <item name="colorPrimaryVariant">#0f3460</item>
         <item name="colorOnPrimary">#ffffff</item>

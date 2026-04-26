@@ -25,7 +25,7 @@ class XrayCoreService(private val context: Context) {
             val json = buildXrayJson(config)
             val configFile = File(configDir, "config.json")
             configFile.writeText(json)
-            LogManager.addLog("✅ Config salva (${json.length} chars)")
+            LogManager.addLog("✅ Config salva")
 
             copyAssets(configDir)
 
@@ -35,7 +35,7 @@ class XrayCoreService(private val context: Context) {
                 return false
             }
 
-            LogManager.addLog("✅ Executável: $xrayPath")
+            LogManager.addLog("✅ Executável pronto")
 
             job = CoroutineScope(Dispatchers.IO).launch {
                 try {
@@ -52,10 +52,10 @@ class XrayCoreService(private val context: Context) {
                             process?.inputStream?.bufferedReader()?.use { reader ->
                                 var count = 0
                                 reader.lines().forEach { line ->
-                                    if (line.isNotBlank() && count < 50) {
-                                        count++
-                                        // Só mostrar erros/warnings importantes
-                                        if (line.contains("started") || line.contains("Error") || line.contains("Failed")) {
+                                    if (line.isNotBlank() && count < 20) {
+                                        // Só mostrar coisas importantes
+                                        if (line.contains("started") || line.contains("Failed") || line.contains("Error") && !line.contains("loopback")) {
+                                            count++
                                             LogManager.addLog("X: $line")
                                         }
                                     }
@@ -86,9 +86,8 @@ class XrayCoreService(private val context: Context) {
         val sb = StringBuilder()
         sb.appendLine("{")
         sb.appendLine("  \"log\": {")
-        sb.appendLine("    \"loglevel\": \"warning\"")
+        sb.appendLine("    \"loglevel\": \"error\"")
         sb.appendLine("  },")
-        // Usar dokodemo-door em vez de SOCKS para tráfego IP puro
         sb.appendLine("  \"inbounds\": [{")
         sb.appendLine("    \"tag\": \"vpn-in\",")
         sb.appendLine("    \"port\": $DOKODEMO_PORT,")
@@ -97,6 +96,11 @@ class XrayCoreService(private val context: Context) {
         sb.appendLine("    \"settings\": {")
         sb.appendLine("      \"network\": \"tcp,udp\",")
         sb.appendLine("      \"followRedirect\": true")
+        sb.appendLine("    },")
+        // Desabilitar detecção de loopback
+        sb.appendLine("    \"sniffing\": {")
+        sb.appendLine("      \"enabled\": false,")
+        sb.appendLine("      \"destOverride\": []")
         sb.appendLine("    }")
         sb.appendLine("  }],")
         sb.appendLine("  \"outbounds\": [{")

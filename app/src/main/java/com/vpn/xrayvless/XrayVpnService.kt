@@ -101,47 +101,24 @@ class XrayVpnService : VpnService() {
 
     private fun runTunnel(fd: FileDescriptor) {
         try {
-            // Usar FileDescriptor diretamente
-            val input = android.system.Os.read(fd, ByteArray(0)) // Teste
-            LogManager.addLog("FileDescriptor válido")
-        } catch (e: Exception) {
-            LogManager.addLog("❌ FD: ${e.message}")
-        }
-        
-        try {
-            // Usar ParcelFileDescriptor para streams
             val inputStream = java.io.FileInputStream(vpnFd?.fileDescriptor)
             val outputStream = java.io.FileOutputStream(vpnFd?.fileDescriptor)
-            
             val buffer = ByteArray(32767)
             var count = 0
-            
             LogManager.addLog("Loop iniciado")
-            
             while (running) {
                 try {
                     val len = inputStream.read(buffer)
                     if (len > 0) {
                         count++
-                        if (count % 50 == 0) {
-                            LogManager.addLog("📦 $count")
-                        }
-                        
-                        // Forward via SOCKS5
+                        if (count % 50 == 0) LogManager.addLog("?? $count")
                         forwardToSocks(buffer, len, outputStream)
                     }
-                } catch (e: InterruptedException) {
-                    break
-                } catch (e: Exception) {
-                    if (running && count < 5) {
-                        LogManager.addLog("Err: ${e.message}")
-                    }
-                }
+                } catch (e: InterruptedException) { break }
+                catch (e: Exception) { if (running && count < 5) LogManager.addLog("Err: ${e.message}") }
             }
             LogManager.addLog("Fim: $count pacotes")
-        } catch (e: Exception) {
-            LogManager.addLog("❌ Fatal: ${e.message}")
-        }
+        } catch (e: Exception) { LogManager.addLog("❌ Fatal: ${e.message}") }
     }
 
     private fun forwardToSocks(data: ByteArray, len: Int, out: java.io.FileOutputStream) {

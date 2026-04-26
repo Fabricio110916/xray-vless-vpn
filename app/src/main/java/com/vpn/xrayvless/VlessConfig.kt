@@ -1,14 +1,20 @@
 package com.vpn.xrayvless
 
-import com.google.gson.annotations.SerializedName
-
 data class VlessConfig(
-    @SerializedName("uuid") val uuid: String,
-    @SerializedName("server") val server: String,
-    @SerializedName("port") val port: Int,
-    @SerializedName("encryption") val encryption: String = "none",
-    @SerializedName("security") val security: String = "none",
-    @SerializedName("type") val type: String = "tcp",
-    @SerializedName("flow") val flow: String = "",
-    @SerializedName("remark") val remark: String = "XRAY VLESS VPN"
+    val uuid: String = "",
+    val server: String = "",
+    val port: Int = 443,
+    val encryption: String = "none",
+    val security: String = "none",
+    val type: String = "tcp",
+    val flow: String = "",
+    val remark: String = "XRAY VLESS VPN",
+    val host: String = "",
+    val path: String = "/",
+    val sni: String = "",
+    val mode: String = "auto",
+    val alpn: String = "",
+    val insecure: Boolean = false,
+    val fp: String = "chrome",
+    val allowInsecure: Boolean = false
 )

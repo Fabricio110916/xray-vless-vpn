@@ -16,9 +16,8 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.nio.ByteBuffer
-import java.nio.channels.DatagramChannel
-import java.nio.channels.SocketChannel
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 
 class XrayVpnService : VpnService() {
 
@@ -63,13 +62,12 @@ class XrayVpnService : VpnService() {
             }
 
             val json = i?.getStringExtra("vless_config") ?: run {
-                LogManager.addLog("❌ Sem config")
                 stopSelf()
                 return START_NOT_STICKY
             }
             
             val c = Gson().fromJson(json, VlessConfig::class.java)
-            LogManager.addLog("✅ Parse: ${c.type} ${c.server}:${c.port}")
+            LogManager.addLog("✅ ${c.type} ${c.server}:${c.port}")
             
             xray = XrayCoreService(this)
             
@@ -79,7 +77,6 @@ class XrayVpnService : VpnService() {
                 return START_NOT_STICKY
             }
             
-            // VPN
             val builder = Builder()
                 .setSession(c.remark)
                 .addAddress("10.0.0.2", 24)
@@ -102,55 +99,73 @@ class XrayVpnService : VpnService() {
             LogManager.addLog("✅ VPN estabelecida")
             running = true
             
-            thread = Thread({ loop() }, "VPN").also {
-                it.setUncaughtExceptionHandler { _, ex -> LogManager.addLog("❌ Thread: ${ex.message}") }
+            thread = Thread({ loopVpn() }, "VPN").also {
+                it.setUncaughtExceptionHandler { _, ex -> LogManager.addLog("❌ Crash: ${ex.message}") }
                 it.start()
             }
             
         } catch (e: Exception) {
-            LogManager.addLog("❌ Erro: ${e.message}")
+            LogManager.addLog("❌ ${e.message}")
             stopSelf()
         }
         
         return START_STICKY
     }
 
-    private fun loop() {
+    private fun loopVpn() {
         try {
-            LogManager.addLog("Loop VPN rodando (dokodemo)")
-            val input = FileInputStream(vpn!!.fileDescriptor)
-            val output = FileOutputStream(vpn!!.fileDescriptor)
+            LogManager.addLog("Loop VPN iniciado")
+            val vpnInput = FileInputStream(vpn!!.fileDescriptor)
+            val vpnOutput = FileOutputStream(vpn!!.fileDescriptor)
             val buffer = ByteArray(32767)
             var count = 0
             
             while (running) {
                 try {
-                    val len = input.read(buffer)
+                    val len = vpnInput.read(buffer)
                     if (len > 0) {
                         count++
                         if (count % 50 == 0) LogManager.addLog("📦 $count")
                         
-                        // Encaminhar para dokodemo-door
-                        try {
-                            val sock = Socket()
-                            sock.connect(InetSocketAddress("127.0.0.1", XrayCoreService.DOKODEMO_PORT), 5000)
-                            protect(sock)
-                            sock.getOutputStream().write(buffer, 0, len)
-                            // Dokodemo-door não responde no mesmo socket TCP para UDP
-                            // A resposta vem pelo próprio túnel VPN
-                            sock.close()
-                        } catch (e: Exception) {
-                            // Ignora pacotes que não consegue rotear
-                        }
+                        // Criar thread para cada conexão TCP
+                        val data = buffer.copyOf(len)
+                        Thread({
+                            try {
+                                val xraySocket = Socket()
+                                xraySocket.soTimeout = 10000  // 10 segundos timeout
+                                xraySocket.connect(InetSocketAddress("127.0.0.1", XrayCoreService.DOKODEMO_PORT), 5000)
+                                protect(xraySocket)
+                                
+                                // Enviar dados para o Xray
+                                xraySocket.getOutputStream().write(data)
+                                xraySocket.getOutputStream().flush()
+                                
+                                // Ler resposta e enviar de volta para a VPN
+                                val responseBuffer = ByteArray(32767)
+                                val responseLen = xraySocket.getInputStream().read(responseBuffer)
+                                if (responseLen > 0) {
+                                    synchronized(vpnOutput) {
+                                        vpnOutput.write(responseBuffer, 0, responseLen)
+                                        vpnOutput.flush()
+                                    }
+                                }
+                                
+                                xraySocket.close()
+                            } catch (e: Exception) {
+                                // Timeout ou erro - normal para UDP/DNS
+                            }
+                        }, "Proxy-${count}").start()
                     }
-                } catch (e: InterruptedException) { break }
-                catch (e: Exception) {
-                    if (running) LogManager.addLog("Loop: ${e.message}")
+                } catch (e: InterruptedException) {
+                    LogManager.addLog("VPN interrompido")
+                    break
+                } catch (e: Exception) {
+                    if (running) LogManager.addLog("VPN err: ${e.message}")
                 }
             }
-            LogManager.addLog("Fim: $count pacotes")
+            LogManager.addLog("Fim VPN: $count pacotes")
         } catch (e: Exception) {
-            LogManager.addLog("❌ Loop fatal: ${e.message}")
+            LogManager.addLog("❌ VPN fatal: ${e.message}")
         }
     }
 

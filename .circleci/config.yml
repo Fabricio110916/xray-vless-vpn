@@ -7,21 +7,27 @@ jobs:
     steps:
       - checkout
       - run:
-          name: Dar permissão ao gradlew
-          command: chmod +x gradlew
-      - run:
-          name: Verificar versão do Java
-          command: java -version
+          name: Configurar Gradle
+          command: |
+            chmod +x gradlew
+            # Usar Gradle do sistema se disponível
+            if command -v gradle &> /dev/null; then
+              echo "Usando Gradle do sistema"
+              gradle --version
+            fi
       - run:
           name: Compilar APK Debug
-          command: ./gradlew assembleDebug --no-daemon --stacktrace
+          command: |
+            # Tentar com gradlew, se falhar usar gradle do sistema
+            ./gradlew assembleDebug --no-daemon --stacktrace || gradle assembleDebug --no-daemon --stacktrace
       - store_artifacts:
           path: app/build/outputs/apk/debug/
           destination: apk/
       - run:
-          name: Listar APK gerado
+          name: Localizar APK
           command: |
-            find app/build/outputs -name "*.apk" -type f
+            find . -name "*.apk" -type f
+            ls -la app/build/outputs/apk/debug/ 2>/dev/null || echo "APK não encontrado"
 
 workflows:
   version: 2

@@ -3,14 +3,12 @@ package com.vpn.xrayvless
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.content.Intent
 import android.net.VpnService
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.google.gson.Gson
 import java.io.FileInputStream
@@ -20,99 +18,120 @@ import java.net.Socket
 
 class XrayVpnService : VpnService() {
 
-    private val binder = LocalBinder()
-    private var vpnInterface: ParcelFileDescriptor? = null
-    private var isRunning = false
-    private var vpnThread: Thread? = null
-    private var xrayCore: XrayCoreService? = null
-    
     inner class LocalBinder : Binder() {
         fun getService(): XrayVpnService = this@XrayVpnService
     }
 
-    override fun onBind(intent: Intent?): IBinder = binder
+    private var vpn: ParcelFileDescriptor? = null
+    private var running = false
+    private var thread: Thread? = null
+    private var xray: XrayCoreService? = null
+
+    override fun onBind(i: Intent?) = LocalBinder()
 
     override fun onCreate() {
         super.onCreate()
-        Log.d(TAG, "Servico criado")
-        createNotificationChannel()
-        xrayCore = XrayCoreService(this)
+        LogManager.init(this)
+        LogManager.addLog("XrayVpnService criado")
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            getSystemService(NotificationManager::class.java).createNotificationChannel(
+                NotificationChannel("x", "VPN", NotificationManager.IMPORTANCE_LOW)
+            )
+        }
+        xray = XrayCoreService(this)
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION_ID, createNotification())
-        
-        intent?.getStringExtra("vless_config")?.let { configJson ->
+    override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
+        startForeground(1, NotificationCompat.Builder(this, "x")
+            .setContentTitle("XRAY VPN").setContentText("Conectando...")
+            .setSmallIcon(R.drawable.ic_chave_vpn).setOngoing(true).build())
+
+        i?.getStringExtra("vless_config")?.let { json ->
             try {
-                val config = Gson().fromJson(configJson, VlessConfig::class.java)
-                Log.d(TAG, "Tipo: ${config.type} | Server: ${config.server}")
+                LogManager.addLog("Carregando config...")
+                val c = Gson().fromJson(json, VlessConfig::class.java)
+                LogManager.addLog("Config: ${c.type} | ${c.server}:${c.port}")
                 
-                if (xrayCore?.start(config) == true) {
-                    Log.d(TAG, "✅ Xray iniciado")
-                    startVpnConnection(config)
+                LogManager.addLog("Iniciando Xray Core...")
+                if (xray?.start(c) == true) {
+                    LogManager.addLog("✅ Xray Core rodando na porta ${XrayCoreService.SOCKS_PORT}")
+                    
+                    LogManager.addLog("Estabelecendo interface VPN...")
+                    val builder = Builder()
+                        .setSession(c.remark)
+                        .addAddress("10.0.0.2", 24)
+                        .addDnsServer("8.8.8.8")
+                        .addDnsServer("1.1.1.1")
+                        .addRoute("0.0.0.0", 0)
+                        .setMtu(1500)
+                        .setBlocking(true)
+                    
+                    // EXCLUIR O PRÓPRIO APP DA VPN (IMPORTANTE!)
+                    try {
+                        builder.addDisallowedApplication(packageName)
+                        LogManager.addLog("✅ App excluído da VPN: $packageName")
+                    } catch (e: Exception) {
+                        LogManager.addLog("⚠️ Não foi possível excluir app: ${e.message}")
+                    }
+                    
+                    vpn = builder.establish()
+                    
+                    if (vpn != null) {
+                        running = true
+                        LogManager.addLog("✅ VPN estabelecida com sucesso")
+                        
+                        // Proteger socket SOCKS
+                        try {
+                            val sock = Socket()
+                            sock.connect(InetSocketAddress("127.0.0.1", XrayCoreService.SOCKS_PORT), 3000)
+                            protect(sock)
+                            sock.close()
+                            LogManager.addLog("✅ Socket SOCKS protegido")
+                        } catch (e: Exception) {
+                            LogManager.addLog("⚠️ Aviso ao proteger SOCKS: ${e.message}")
+                        }
+                        
+                        thread = Thread({ loop() }, "VPN").also { it.start() }
+                        LogManager.addLog("✅ Thread VPN iniciada")
+                    } else {
+                        LogManager.addLog("❌ establish() retornou null!")
+                        stopSelf()
+                    }
                 } else {
-                    Log.e(TAG, "❌ Xray falhou")
+                    LogManager.addLog("❌ Xray Core falhou ao iniciar")
                     stopSelf()
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Erro: ${e.message}", e)
+                LogManager.addLog("❌ ERRO: ${e.message}")
+                e.printStackTrace()
                 stopSelf()
             }
         }
-        
         return START_STICKY
     }
 
-    private fun startVpnConnection(config: VlessConfig) {
+    private fun loop() {
+        LogManager.addLog("Loop VPN iniciado")
         try {
-            val builder = Builder()
-                .setSession("XRAY ${config.remark}")
-                .addAddress("10.0.0.2", 24)
-                .addDnsServer("8.8.8.8")
-                .addDnsServer("1.1.1.1")
-                .addRoute("0.0.0.0", 0)
-                .setMtu(1500)
-                .setBlocking(true)
-                
-            vpnInterface = builder.establish()
-            
-            if (vpnInterface != null) {
-                isRunning = true
-                Log.d(TAG, "✅ VPN estabelecida")
-                
-                vpnThread = Thread({
-                    runVpnLoop(config)
-                }, "VPN-Loop")
-                vpnThread?.start()
-                
-                updateNotification("Conectado | ${config.type}")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Erro VPN: ${e.message}", e)
-            stopSelf()
-        }
-    }
-
-    private fun runVpnLoop(config: VlessConfig) {
-        try {
-            val input = FileInputStream(vpnInterface!!.fileDescriptor)
-            val output = FileOutputStream(vpnInterface!!.fileDescriptor)
+            val input = FileInputStream(vpn!!.fileDescriptor)
+            val output = FileOutputStream(vpn!!.fileDescriptor)
             val buffer = ByteArray(32767)
             var count = 0
+            var errors = 0
             
-            while (isRunning) {
+            while (running) {
                 try {
                     val len = input.read(buffer)
                     if (len > 0) {
                         count++
                         if (count % 100 == 0) {
-                            Log.d(TAG, "?? $count pacotes")
+                            LogManager.addLog("📦 $count pacotes (erros: $errors)")
                         }
                         
-                        // Encaminhar via SOCKS do Xray
                         try {
                             val sock = Socket()
-                            sock.connect(InetSocketAddress("127.0.0.1", 10808), 3000)
+                            sock.connect(InetSocketAddress("127.0.0.1", XrayCoreService.SOCKS_PORT), 5000)
                             protect(sock)
                             sock.getOutputStream().write(buffer, 0, len)
                             
@@ -122,59 +141,40 @@ class XrayVpnService : VpnService() {
                             
                             sock.close()
                         } catch (e: Exception) {
-                            // Pacote não roteável, descarta
+                            errors++
+                            if (errors <= 3) {
+                                LogManager.addLog("⚠️ Erro socket #$errors: ${e.message}")
+                            }
                         }
                     }
                 } catch (e: InterruptedException) {
+                    LogManager.addLog("Thread VPN interrompida")
                     break
                 } catch (e: Exception) {
-                    if (isRunning) Log.e(TAG, "Loop: ${e.message}")
-                    break
+                    if (running) {
+                        errors++
+                        LogManager.addLog("❌ Erro loop: ${e.message}")
+                        if (errors > 10) {
+                            LogManager.addLog("❌ Muitos erros, parando...")
+                            break
+                        }
+                    }
                 }
             }
-            Log.d(TAG, "Total: $count pacotes")
+            LogManager.addLog("Loop finalizado. Total: $count pacotes, $errors erros")
         } catch (e: Exception) {
-            Log.e(TAG, "Fatal: ${e.message}", e)
+            LogManager.addLog("❌ ERRO FATAL: ${e.message}")
+            e.printStackTrace()
         }
-    }
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID, "XRAY VPN", NotificationManager.IMPORTANCE_LOW
-            ).apply { description = "Status VPN" }
-            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-        }
-    }
-
-    private fun createNotification() = NotificationCompat.Builder(this, CHANNEL_ID)
-        .setContentTitle("XRAY VLESS VPN")
-        .setContentText("Conectando...")
-        .setSmallIcon(R.drawable.ic_chave_vpn)
-        .setOngoing(true)
-        .build()
-
-    private fun updateNotification(text: String) {
-        val n = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("XRAY VLESS VPN")
-            .setContentText(text)
-            .setSmallIcon(R.drawable.ic_chave_vpn)
-            .setOngoing(true)
-            .build()
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, n)
     }
 
     override fun onDestroy() {
-        isRunning = false
-        vpnThread?.interrupt()
-        xrayCore?.stop()
-        try { vpnInterface?.close() } catch (e: Exception) {}
+        LogManager.addLog("Parando serviço VPN...")
+        running = false
+        thread?.interrupt()
+        xray?.stop()
+        try { vpn?.close() } catch (e: Exception) {}
+        LogManager.addLog("Serviço VPN parado")
         super.onDestroy()
-    }
-
-    companion object {
-        private const val TAG = "XrayVpnService"
-        private const val NOTIFICATION_ID = 1
-        private const val CHANNEL_ID = "xray_vpn"
     }
 }

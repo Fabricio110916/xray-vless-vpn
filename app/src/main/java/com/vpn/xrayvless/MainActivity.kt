@@ -12,7 +12,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.google.android.material.textfield.TextInputEditText
 import com.google.gson.Gson
-import kotlinx.coroutines.*
 
 class MainActivity : AppCompatActivity() {
 
@@ -42,12 +41,12 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         
-        initializeViews()
+        initViews()
         setupListeners()
         bindVpnService()
     }
 
-    private fun initializeViews() {
+    private fun initViews() {
         configEditText = findViewById(R.id.configEditText)
         importButton = findViewById(R.id.importButton)
         pasteButton = findViewById(R.id.pasteButton)
@@ -58,7 +57,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupListeners() {
-        // Importar configuração
         importButton.setOnClickListener {
             val configText = configEditText.text.toString().trim()
             if (configText.isNotEmpty()) {
@@ -68,7 +66,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Colar da área de transferência
         pasteButton.setOnClickListener {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             val clip = clipboard.primaryClip
@@ -81,7 +78,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Conectar/Desconectar
         connectButton.setOnClickListener {
             if (isConnected) {
                 disconnectVpn()
@@ -93,22 +89,20 @@ class MainActivity : AppCompatActivity() {
 
     private fun processVlessConfig(configUrl: String) {
         try {
-            // Parse da URL VLESS
             if (configUrl.startsWith("vless://")) {
                 val vlessConfig = parseVlessUrl(configUrl)
                 saveConfigToPreferences(vlessConfig)
-                Toast.makeText(this, "✅ Configuração VLESS importada com sucesso!", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Configuração VLESS importada com sucesso!", Toast.LENGTH_LONG).show()
                 updateUIAfterImport()
             } else {
-                Toast.makeText(this, "❌ URL VLESS inválida! Deve começar com vless://", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "URL VLESS inválida!", Toast.LENGTH_LONG).show()
             }
         } catch (e: Exception) {
-            Toast.makeText(this, "Erro ao processar configuração: ${e.message}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Erro: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
     private fun parseVlessUrl(url: String): VlessConfig {
-        // Exemplo: vless://uuid@server:port?encryption=none&security=xtls&type=tcp&flow=xtls-rprx-direct#Remark
         val cleanUrl = url.removePrefix("vless://")
         val parts = cleanUrl.split("@")
         
@@ -119,17 +113,20 @@ class MainActivity : AppCompatActivity() {
         val port = serverAndPort[1].toInt()
         
         val params = mutableMapOf<String, String>()
-        val fragment = if (serverAndParams.size > 1) {
-            val paramString = serverAndParams[1].split("#")
-            if (paramString.size > 1) paramString[1] else ""
-            paramString[0].split("&").forEach { param ->
+        var remark = "XRAY VLESS VPN"
+        
+        if (serverAndParams.size > 1) {
+            val paramAndFragment = serverAndParams[1].split("#")
+            if (paramAndFragment.size > 1) {
+                remark = paramAndFragment[1]
+            }
+            paramAndFragment[0].split("&").forEach { param ->
                 val keyValue = param.split("=")
                 if (keyValue.size == 2) {
                     params[keyValue[0]] = keyValue[1]
                 }
             }
-            if (paramString.size > 1) paramString[1] else ""
-        } else ""
+        }
         
         return VlessConfig(
             uuid = uuid,
@@ -139,7 +136,7 @@ class MainActivity : AppCompatActivity() {
             security = params["security"] ?: "none",
             type = params["type"] ?: "tcp",
             flow = params["flow"] ?: "",
-            remark = if (fragment.isNotEmpty()) fragment else "XRAY VLESS VPN"
+            remark = remark
         )
     }
 
@@ -199,17 +196,17 @@ class MainActivity : AppCompatActivity() {
     private fun updateConnectionStatus() {
         if (isConnected) {
             statusText.text = "Conectado"
-            statusText.setTextColor(ContextCompat.getColor(this, R.color.connected))
-            statusIndicator.setBackgroundColor(ContextCompat.getColor(this, R.color.connected))
+            statusText.setTextColor(ContextCompat.getColor(this, R.color.conectado))
+            statusIndicator.setBackgroundColor(ContextCompat.getColor(this, R.color.conectado))
             connectButton.text = "DESCONECTAR"
-            connectButton.backgroundTintList = ContextCompat.getColorStateList(this, R.color.disconnect)
+            connectButton.backgroundTintList = ContextCompat.getColorStateList(this, R.color.desconectar)
             trafficText.text = "Conectado"
         } else {
             statusText.text = "Desconectado"
-            statusText.setTextColor(ContextCompat.getColor(this, R.color.disconnected))
-            statusIndicator.setBackgroundColor(ContextCompat.getColor(this, R.color.disconnected))
+            statusText.setTextColor(ContextCompat.getColor(this, R.color.desconectado))
+            statusIndicator.setBackgroundColor(ContextCompat.getColor(this, R.color.desconectado))
             connectButton.text = "CONECTAR"
-            connectButton.backgroundTintList = ContextCompat.getColorStateList(this, R.color.connect)
+            connectButton.backgroundTintList = ContextCompat.getColorStateList(this, R.color.conectar)
             trafficText.text = "0 KB/s"
         }
     }

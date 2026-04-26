@@ -18,52 +18,52 @@ import java.io.FileOutputStream
 
 class XrayVpnService : VpnService() {
 
-    private val ligacao = LigacaoLocal()
-    private var interfaceVpn: ParcelFileDescriptor? = null
-    private var executando = false
-    private val escopoServico = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val binder = LocalBinder()
+    private var vpnInterface: ParcelFileDescriptor? = null
+    private var isRunning = false
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     
-    inner class LigacaoLocal : Binder() {
-        fun obterServico(): XrayVpnService = this@XrayVpnService
+    inner class LocalBinder : Binder() {
+        fun getService(): XrayVpnService = this@XrayVpnService
     }
 
-    override fun onBind(intencao: Intent?): IBinder {
-        return ligacao
+    override fun onBind(intent: Intent?): IBinder {
+        return binder
     }
 
     override fun onCreate() {
         super.onCreate()
-        criarCanalNotificacao()
+        createNotificationChannel()
     }
 
-    override fun onStartCommand(intencao: Intent?, flags: Int, idInicio: Int): Int {
-        val notificacao = criarNotificacao()
-        startForeground(ID_NOTIFICACAO, notificacao)
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val notification = createNotification()
+        startForeground(NOTIFICATION_ID, notification)
         
-        intencao?.getStringExtra("config_vless")?.let { configJson ->
-            val configVless = Gson().fromJson(configJson, VlessConfig::class.java)
-            iniciarConexaoVpn(configVless)
+        intent?.getStringExtra("vless_config")?.let { configJson ->
+            val vlessConfig = Gson().fromJson(configJson, VlessConfig::class.java)
+            startVpnConnection(vlessConfig)
         }
         
         return START_STICKY
     }
 
-    private fun iniciarConexaoVpn(config: VlessConfig) {
-        escopoServico.launch {
+    private fun startVpnConnection(config: VlessConfig) {
+        serviceScope.launch {
             try {
-                val construtor = Builder()
-                    .setSession(config.apelido)
+                val builder = Builder()
+                    .setSession(config.remark)
                     .addAddress("10.0.0.2", 24)
                     .addDnsServer("1.1.1.1")
                     .addDnsServer("8.8.8.8")
                     .addRoute("0.0.0.0", 0)
                     .setMtu(1500)
                     
-                interfaceVpn = construtor.establish()
+                vpnInterface = builder.establish()
                 
-                if (interfaceVpn != null) {
-                    executando = true
-                    executarNucleoXray(config)
+                if (vpnInterface != null) {
+                    isRunning = true
+                    runXrayCore(config)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -72,19 +72,19 @@ class XrayVpnService : VpnService() {
         }
     }
 
-    private fun executarNucleoXray(config: VlessConfig) {
-        escopoServico.launch {
+    private fun runXrayCore(config: VlessConfig) {
+        serviceScope.launch {
             try {
-                while (executando) {
-                    interfaceVpn?.let { descritor ->
-                        val fluxoEntrada = FileInputStream(descritor.fileDescriptor)
-                        val fluxoSaida = FileOutputStream(descritor.fileDescriptor)
+                while (isRunning) {
+                    vpnInterface?.let { pfd ->
+                        val inputStream = FileInputStream(pfd.fileDescriptor)
+                        val outputStream = FileOutputStream(pfd.fileDescriptor)
                         
                         val buffer = ByteArray(32767)
-                        var comprimento: Int
+                        var length: Int
                         
-                        while (fluxoEntrada.read(buffer).also { comprimento = it } != -1) {
-                            fluxoSaida.write(buffer, 0, comprimento)
+                        while (inputStream.read(buffer).also { length = it } != -1) {
+                            outputStream.write(buffer, 0, length)
                         }
                     }
                     delay(100)
@@ -95,34 +95,34 @@ class XrayVpnService : VpnService() {
         }
     }
 
-    private fun criarCanalNotificacao() {
+    private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val canal = NotificationChannel(
-                ID_CANAL,
-                "Status da VPN XRAY",
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "XRAY VPN Status",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Status da conexão VPN XRAY"
             }
             
-            val gerenciadorNotificacao = getSystemService(NotificationManager::class.java)
-            gerenciadorNotificacao.createNotificationChannel(canal)
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager.createNotificationChannel(channel)
         }
     }
 
-    private fun criarNotificacao(): Notification {
-        val intencaoPendente = PendingIntent.getActivity(
+    private fun createNotification(): Notification {
+        val pendingIntent = PendingIntent.getActivity(
             this,
             0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         
-        return NotificationCompat.Builder(this, ID_CANAL)
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("XRAY VLESS VPN")
             .setContentText("VPN Conectada")
             .setSmallIcon(R.drawable.ic_chave_vpn)
-            .setContentIntent(intencaoPendente)
+            .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
@@ -130,13 +130,13 @@ class XrayVpnService : VpnService() {
 
     override fun onDestroy() {
         super.onDestroy()
-        executando = false
-        interfaceVpn?.close()
-        escopoServico.cancel()
+        isRunning = false
+        vpnInterface?.close()
+        serviceScope.cancel()
     }
 
     companion object {
-        private const val ID_NOTIFICACAO = 1
-        private const val ID_CANAL = "canal_vpn_xray"
+        private const val NOTIFICATION_ID = 1
+        private const val CHANNEL_ID = "xray_vpn_channel"
     }
 }

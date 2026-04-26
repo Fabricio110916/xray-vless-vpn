@@ -7,27 +7,53 @@ jobs:
     steps:
       - checkout
       - run:
-          name: Instalar Go
+          name: Instalar Go 1.22
           command: |
-            sudo apt-get update
-            sudo apt-get install -y golang-go git
+            cd /tmp
+            wget -q https://go.dev/dl/go1.22.10.linux-amd64.tar.gz
+            sudo tar -C /usr/local -xzf go1.22.10.linux-amd64.tar.gz
+            export PATH=/usr/local/go/bin:$PATH
             go version
       - run:
           name: Compilar Xray Core
           command: |
-            export PATH=$PATH:$(go env GOPATH)/bin
-            go install golang.org/x/mobile/cmd/gomobile@latest
-            gomobile init
+            export PATH=/usr/local/go/bin:$PATH
+            export GOPATH=$HOME/go
+            export PATH=$GOPATH/bin:$PATH
+            
+            # Instalar gomobile com versão compatível
+            go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20231127183840-76d4a6d75e67
+            
+            # Inicializar gomobile
+            gomobile init 2>/dev/null || true
+            
+            # Clonar e compilar Xray
             git clone --depth 1 https://github.com/XTLS/Xray-core.git /tmp/xray
             cd /tmp/xray
-            gomobile bind -v -target=android -androidapi 21 -o libs/xray.aar ./core
-            mkdir -p ~/project/app/libs
-            cp libs/xray.aar ~/project/app/libs/
+            
+            # Criar diretório de saída
+            mkdir -p $HOME/project/app/libs
+            
+            # Compilar para Android
+            gomobile bind \
+              -v \
+              -target=android \
+              -androidapi 21 \
+              -o $HOME/project/app/libs/xray.aar \
+              -ldflags="-s -w -buildid=" \
+              ./core
+            
+            echo "✅ Xray Core compilado!"
+            ls -la $HOME/project/app/libs/
       - run:
           name: Compilar APK
           command: |
             chmod +x gradlew
-            ./gradlew assembleDebug
+            ./gradlew assembleDebug --no-daemon
+      - run:
+          name: Verificar APK
+          command: |
+            find app/build/outputs -name "*.apk" -type f -exec ls -la {} \;
       - store_artifacts:
           path: app/build/outputs/apk/debug/
           destination: apk/

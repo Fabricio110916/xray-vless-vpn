@@ -3,44 +3,72 @@
 echo "??️  Compilando Xray Core para Android..."
 echo ""
 
-# Verificar dependências
-command -v go >/dev/null 2>&1 || { echo "❌ Go não instalado. Instale: apt install golang-go"; exit 1; }
-command -v gomobile >/dev/null 2>&1 || { echo "Instalando gomobile..."; go install golang.org/x/mobile/cmd/gomobile@latest; }
-
-# Configurar ambiente
-export ANDROID_HOME=${ANDROID_HOME:-$ANDROID_SDK_ROOT}
-export PATH=$PATH:$(go env GOPATH)/bin
-
-# Inicializar gomobile
-gomobile init 2>/dev/null || true
-
-# Baixar Xray Core
-echo "?? Baixando Xray Core..."
-if [ ! -d "Xray-core" ]; then
-    git clone --depth 1 https://github.com/XTLS/Xray-core.git
+# Verificar Go
+if ! command -v go &> /dev/null; then
+    echo "❌ Go não instalado"
+    echo "Instale: apt install golang-go ou https://go.dev/dl/"
+    exit 1
 fi
 
-cd Xray-core
+GO_VERSION=$(go version | grep -oP 'go\K[0-9]+\.[0-9]+')
+echo "Go versão: $GO_VERSION"
 
-# Compilar para Android
-echo "?? Compilando para Android (armeabi-v7a, arm64-v8a, x86, x86_64)..."
-gomobile bind -v \
-    -target=android \
-    -androidapi 21 \
-    -o ../app/libs/xray.aar \
-    -ldflags="-s -w" \
-    ./core
+# Verificar se a versão é compatível
+if [ "$(echo "$GO_VERSION < 1.21" | bc -l 2>/dev/null || echo 0)" = "1" ]; then
+    echo "❌ Go muito antigo. Instale Go 1.21+"
+    exit 1
+fi
+
+export GOPATH=${GOPATH:-$HOME/go}
+export PATH=$GOPATH/bin:$PATH
+
+# Instalar gomobile
+echo "?? Instalando gomobile..."
+go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20231127183840-76d4a6d75e67
+
+# Inicializar gomobile
+echo "⚙️  Inicializando gomobile..."
+gomobile init 2>/dev/null || true
+
+# Criar diretório libs
+mkdir -p app/libs
+
+# Verificar se já existe
+if [ -f "app/libs/xray.aar" ]; then
+    echo "⚠️  xray.aar já existe. Removendo..."
+    rm app/libs/xray.aar
+fi
+
+# Baixar Xray
+echo "?? Baixando Xray Core..."
+if [ ! -d "/tmp/xray-build" ]; then
+    git clone --depth 1 https://github.com/XTLS/Xray-core.git /tmp/xray-build
+fi
+
+cd /tmp/xray-build
+
+# Compilar
+echo "?? Compilando (isso pode levar alguns minutos)..."
+gomobile bind \
+  -v \
+  -target=android \
+  -androidapi 21 \
+  -o $OLDPWD/app/libs/xray.aar \
+  -ldflags="-s -w -buildid=" \
+  ./core
 
 if [ $? -eq 0 ]; then
     echo ""
-    echo "✅ Xray Core compilado com sucesso!"
-    echo "?? AAR gerado em: app/libs/xray.aar"
-    
-    # Extrair .so do AAR
-    cd ../app/libs
-    unzip -o xray.aar -d xray_libs
-    cp -r xray_libs/jni/* ../src/main/jniLibs/ 2>/dev/null || true
-    echo "✅ Bibliotecas nativas extraídas"
+    echo "========================================="
+    echo "✅ XRAY CORE COMPILADO COM SUCESSO!"
+    echo "========================================="
+    echo "Arquivo: app/libs/xray.aar"
+    ls -la $OLDPWD/app/libs/xray.aar
+    echo ""
+    echo "Agora compile o APK:"
+    echo "  cd $OLDPWD"
+    echo "  ./gradlew assembleDebug"
 else
     echo "❌ Falha na compilação"
+    exit 1
 fi

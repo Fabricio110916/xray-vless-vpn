@@ -26,22 +26,24 @@ class MainActivity : AppCompatActivity() {
     private lateinit var copyLogButton: Button
 
     private var isConnected = false
+    private var serviceBound = false
 
     private val serviceConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {}
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            LogManager.addLog("Serviço conectado")
+        }
         override fun onServiceDisconnected(name: ComponentName?) {
+            LogManager.addLog("Serviço desconectado")
             isConnected = false
+            serviceBound = false
             runOnUiThread { updateStatus() }
-            LogManager.addLog("⚠️ Serviço VPN desconectado")
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        
         LogManager.init(this)
-        LogManager.addLog("MainActivity criada")
 
         configEditText = findViewById(R.id.configEditText)
         importButton = findViewById(R.id.importButton)
@@ -52,99 +54,56 @@ class MainActivity : AppCompatActivity() {
         logTextView = findViewById(R.id.logTextView)
         copyLogButton = findViewById(R.id.copyLogButton)
 
-        // Atualizar logs na tela em tempo real
         LogManager.addListener { line ->
             runOnUiThread {
                 logTextView.append("\n$line")
-                // Scroll para o final
-                logTextView.post {
-                    (logTextView.parent as? android.widget.ScrollView)?.fullScroll(android.view.View.FOCUS_DOWN)
-                }
+                (logTextView.parent as? android.widget.ScrollView)?.fullScroll(android.view.View.FOCUS_DOWN)
             }
         }
-
-        // Mostrar logs existentes
         logTextView.text = LogManager.getLogs()
 
         importButton.setOnClickListener {
             val t = configEditText.text.toString().trim()
-            if (t.isNotEmpty()) {
-                LogManager.addLog("Botão IMPORTAR clicado")
-                processConfig(t)
-            } else {
-                Toast.makeText(this, "Cole a config primeiro!", Toast.LENGTH_SHORT).show()
-            }
+            if (t.isNotEmpty()) processConfig(t)
+            else Toast.makeText(this, "Cole a config!", Toast.LENGTH_SHORT).show()
         }
 
         pasteButton.setOnClickListener {
-            LogManager.addLog("Botão COLAR clicado")
             val clip = (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip
             if (clip != null && clip.itemCount > 0) {
-                val texto = clip.getItemAt(0).text.toString()
-                configEditText.setText(texto)
-                LogManager.addLog("Config colada: ${texto.take(40)}...")
-                Toast.makeText(this, "Config colada!", Toast.LENGTH_SHORT).show()
+                configEditText.setText(clip.getItemAt(0).text.toString())
+                LogManager.addLog("Config colada")
             }
         }
 
         connectButton.setOnClickListener {
             if (isConnected) {
-                LogManager.addLog("Desconectando VPN...")
-                stopService(Intent(this, XrayVpnService::class.java))
-                isConnected = false
-                updateStatus()
+                disconnectVpn()
             } else {
-                LogManager.addLog("Iniciando conexão VPN...")
                 val intent = VpnService.prepare(this)
-                if (intent != null) {
-                    LogManager.addLog("Solicitando permissão VPN...")
-                    startActivityForResult(intent, 100)
-                } else {
-                    LogManager.addLog("Permissão VPN já concedida")
-                    startVpn()
-                }
+                if (intent != null) startActivityForResult(intent, 100)
+                else startVpn()
             }
         }
 
         copyLogButton.setOnClickListener {
-            val logs = LogManager.getLogs()
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            clipboard.setPrimaryClip(ClipData.newPlainText("logs", logs))
+            clipboard.setPrimaryClip(ClipData.newPlainText("logs", LogManager.getLogs()))
             Toast.makeText(this, "Logs copiados!", Toast.LENGTH_SHORT).show()
-            LogManager.addLog("📋 Logs copiados para área de transferência")
         }
     }
 
     private fun processConfig(url: String) {
         try {
-            LogManager.addLog("Processando URL: ${url.take(60)}...")
-            
-            if (!url.startsWith("vless://")) {
-                LogManager.addLog("❌ URL inválida")
-                Toast.makeText(this, "URL inválida!", Toast.LENGTH_SHORT).show()
-                return
-            }
-            
+            if (!url.startsWith("vless://")) return
             val config = parseUrl(url)
-            LogManager.addLog("✅ Parse OK - Tipo: ${config.type}")
-            LogManager.addLog("   Server: ${config.server}:${config.port}")
-            LogManager.addLog("   Host: ${config.host}")
-            LogManager.addLog("   Path: ${config.path}")
-            LogManager.addLog("   SNI: ${config.sni}")
-            LogManager.addLog("   Security: ${config.security}")
-            LogManager.addLog("   Mode: ${config.mode}")
-            
-            val json = Gson().toJson(config)
-            getSharedPreferences("vpn", MODE_PRIVATE).edit().putString("config", json).apply()
-            LogManager.addLog("💾 Config salva")
-            
-            Toast.makeText(this, "✅ ${config.type} | ${config.server}", Toast.LENGTH_LONG).show()
+            getSharedPreferences("vpn", MODE_PRIVATE).edit()
+                .putString("config", Gson().toJson(config)).apply()
+            LogManager.addLog("✅ ${config.type} ${config.server}:${config.port}")
             connectButton.isEnabled = true
-            
+            Toast.makeText(this, "✅ ${config.server}", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
-            LogManager.addLog("❌ ERRO NO PARSE: ${e.message}")
-            e.printStackTrace()
-            Toast.makeText(this, "Erro: ${e.message}", Toast.LENGTH_LONG).show()
+            LogManager.addLog("❌ ${e.message}")
         }
     }
 
@@ -158,7 +117,6 @@ class MainActivity : AppCompatActivity() {
         val hp = rest.substring(0, if (q > 0) q else rest.length).split(":")
         val server = hp[0]
         val port = hp.getOrNull(1)?.toIntOrNull() ?: 443
-        
         val params = mutableMapOf<String, String>()
         if (q > 0) {
             val end = if (h > q) h else rest.length
@@ -167,46 +125,60 @@ class MainActivity : AppCompatActivity() {
                 if (kv.size == 2) params[kv[0]] = try { URLDecoder.decode(kv[1], "UTF-8") } catch (e: Exception) { kv[1] }
             }
         }
-        val remark = if (h > 0 && h < rest.length - 1) try { URLDecoder.decode(rest.substring(h + 1), "UTF-8") } catch (e: Exception) { rest.substring(h + 1) } else "VPN"
-
+        val remark = if (h > 0) try { URLDecoder.decode(rest.substring(h + 1), "UTF-8") } catch (e: Exception) { rest.substring(h + 1) } else "VPN"
         return VlessConfig(
             uuid = uuid, server = server, port = port,
             encryption = params["encryption"] ?: "none",
             security = params["security"] ?: "none",
             type = params["type"] ?: "tcp",
-            remark = remark,
-            host = params["host"] ?: "",
-            path = params["path"] ?: "/",
-            sni = params["sni"] ?: server,
-            mode = params["mode"] ?: "auto",
-            alpn = params["alpn"] ?: "",
-            insecure = params["insecure"] == "1",
-            allowInsecure = params["allowInsecure"] == "1"
+            remark = remark, host = params["host"] ?: "",
+            path = params["path"] ?: "/", sni = params["sni"] ?: server,
+            mode = params["mode"] ?: "auto", alpn = params["alpn"] ?: "",
+            insecure = params["insecure"] == "1", allowInsecure = params["allowInsecure"] == "1"
         )
     }
 
     private fun startVpn() {
         val json = getSharedPreferences("vpn", MODE_PRIVATE).getString("config", null)
-        if (json == null) {
-            LogManager.addLog("❌ Nenhuma config salva!")
-            Toast.makeText(this, "Importe config!", Toast.LENGTH_SHORT).show()
-            return
-        }
-        
-        LogManager.addLog("🚀 Iniciando serviço VPN...")
+        if (json == null) { Toast.makeText(this, "Importe config!", Toast.LENGTH_SHORT).show(); return }
         try {
-            val intent = Intent(this, XrayVpnService::class.java).apply {
-                putExtra("vless_config", json)
-            }
+            val intent = Intent(this, XrayVpnService::class.java).putExtra("vless_config", json)
             ContextCompat.startForegroundService(this, intent)
-            bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+            
+            // Vincular ao serviço
+            if (!serviceBound) {
+                bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+                serviceBound = true
+            }
+            
             isConnected = true
             updateStatus()
-            LogManager.addLog("✅ Serviço VPN iniciado")
+            LogManager.addLog("VPN iniciada")
         } catch (e: Exception) {
-            LogManager.addLog("❌ ERRO ao iniciar VPN: ${e.message}")
-            Toast.makeText(this, "Erro: ${e.message}", Toast.LENGTH_LONG).show()
+            LogManager.addLog("❌ ${e.message}")
         }
+    }
+
+    private fun disconnectVpn() {
+        LogManager.addLog("Desconectando VPN...")
+        try {
+            // Desvincular serviço
+            if (serviceBound) {
+                unbindService(serviceConnection)
+                serviceBound = false
+            }
+            
+            // Parar serviço
+            val intent = Intent(this, XrayVpnService::class.java)
+            stopService(intent)
+            
+            LogManager.addLog("✅ VPN desconectada")
+        } catch (e: Exception) {
+            LogManager.addLog("Erro ao desconectar: ${e.message}")
+        }
+        
+        isConnected = false
+        updateStatus()
     }
 
     private fun updateStatus() {
@@ -227,18 +199,14 @@ class MainActivity : AppCompatActivity() {
 
     override fun onActivityResult(rq: Int, rc: Int, data: Intent?) {
         super.onActivityResult(rq, rc, data)
-        if (rq == 100) {
-            if (rc == Activity.RESULT_OK) {
-                LogManager.addLog("✅ Permissão VPN concedida")
-                startVpn()
-            } else {
-                LogManager.addLog("❌ Permissão VPN negada")
-            }
-        }
+        if (rq == 100 && rc == Activity.RESULT_OK) startVpn()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        try { unbindService(serviceConnection) } catch (e: Exception) {}
+        if (serviceBound) {
+            try { unbindService(serviceConnection) } catch (e: Exception) {}
+            serviceBound = false
+        }
     }
 }

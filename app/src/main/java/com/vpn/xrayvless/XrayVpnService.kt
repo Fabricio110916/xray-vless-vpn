@@ -64,16 +64,43 @@ class XrayVpnService : VpnService() {
                 .setMtu(1500)
                 .setBlocking(true)
             
-            try { builder.addDisallowedApplication(packageName) } catch (e: Exception) {}
+            // EXCLUIR APP DA VPN (previne loop)
+            try {
+                builder.addDisallowedApplication(packageName)
+                LogManager.addLog("✅ App excluído: $packageName")
+            } catch (e: Exception) {
+                LogManager.addLog("⚠️ Excluir app: ${e.message}")
+            }
             
             vpnInterface = builder.establish()
             if (vpnInterface == null) { stopSelf(); return START_NOT_STICKY }
             
+            // PROTEGER SOCKET SOCKS (ANTES de iniciar Tun2Socks)
             try {
                 val sock = Socket()
                 sock.connect(InetSocketAddress("127.0.0.1", XrayCoreService.SOCKS_PORT), 5000)
-                protect(sock)
+                val ok = protect(sock)
+                LogManager.addLog("🔒 SOCKS protegido: $ok")
                 sock.close()
+            } catch (e: Exception) {
+                LogManager.addLog("⚠️ SOCKS: ${e.message}")
+            }
+            
+            // Proteger DNS também
+            try {
+                val dns = Socket()
+                dns.connect(InetSocketAddress("1.1.1.1", 53), 3000)
+                protect(dns)
+                dns.close()
+                LogManager.addLog("🔒 DNS 1.1.1.1 protegido")
+            } catch (e: Exception) {}
+            
+            try {
+                val dns = Socket()
+                dns.connect(InetSocketAddress("8.8.8.8", 53), 3000)
+                protect(dns)
+                dns.close()
+                LogManager.addLog("🔒 DNS 8.8.8.8 protegido")
             } catch (e: Exception) {}
             
             running = true
@@ -85,27 +112,27 @@ class XrayVpnService : VpnService() {
                 m.isAccessible = true
                 fd = m.invoke(vpnInterface) as Int
             } catch (e: Exception) {}
-            
-            if (fd < 0) {
-                try { fd = vpnInterface!!.detachFd() } catch (e: Exception) {}
-            }
-            
-            if (fd < 0) {
-                try {
-                    val f = FileDescriptor::class.java.getDeclaredField("fd")
-                    f.isAccessible = true
-                    fd = f.getInt(vpnInterface!!.fileDescriptor)
-                } catch (e: Exception) {}
-            }
+            if (fd < 0) try { fd = vpnInterface!!.detachFd() } catch (e: Exception) {}
+            if (fd < 0) try {
+                val f = FileDescriptor::class.java.getDeclaredField("fd")
+                f.isAccessible = true
+                fd = f.getInt(vpnInterface!!.fileDescriptor)
+            } catch (e: Exception) {}
             
             LogManager.addLog("FD=$fd Tun=${Tun2SocksJNI.isAvailable()}")
             
             if (fd >= 0 && Tun2SocksJNI.isAvailable()) {
                 val finalFd = fd
                 Thread({
-                    Tun2SocksJNI.StartTun2socks(finalFd, "127.0.0.1:${XrayCoreService.SOCKS_PORT}", 1500)
+                    LogManager.addLog("Tun2Socks thread iniciando...")
+                    try {
+                        Tun2SocksJNI.StartTun2socks(finalFd, "127.0.0.1:${XrayCoreService.SOCKS_PORT}", 1500)
+                        LogManager.addLog("Tun2Socks retornou")
+                    } catch (e: Exception) {
+                        LogManager.addLog("❌ Tun2Socks: ${e.message}")
+                    }
                 }).start()
-                LogManager.addLog("✅ Tun2Socks iniciado")
+                LogManager.addLog("✅ VPN ativa!")
             }
             
         } catch (e: Exception) {
@@ -116,6 +143,7 @@ class XrayVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        LogManager.addLog("onDestroy")
         running = false
         try { Tun2SocksJNI.StopTun2socks() } catch (e: Exception) {}
         xray?.stop()

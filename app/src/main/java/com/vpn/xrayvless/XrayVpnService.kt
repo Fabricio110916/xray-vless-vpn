@@ -51,16 +51,10 @@ class XrayVpnService : VpnService() {
             val json = i?.getStringExtra("vless_config") ?: run { stopSelf(); return START_NOT_STICKY }
             val c = Gson().fromJson(json, VlessConfig::class.java)
             
-            // Iniciar Xray
             xray = XrayCoreService(this)
-            if (!xray!!.start(c)) { 
-                LogManager.addLog("❌ Xray falhou")
-                stopSelf()
-                return START_NOT_STICKY 
-            }
-            LogManager.addLog("✅ Xray SOCKS5:${XrayCoreService.SOCKS_PORT}")
+            if (!xray!!.start(c)) { stopSelf(); return START_NOT_STICKY }
+            LogManager.addLog("✅ Xray OK")
             
-            // Criar VPN
             val builder = Builder()
                 .setSession(c.remark)
                 .addAddress("10.0.0.2", 24)
@@ -73,67 +67,69 @@ class XrayVpnService : VpnService() {
             try { builder.addDisallowedApplication(packageName) } catch (e: Exception) {}
             
             vpnInterface = builder.establish()
-            if (vpnInterface == null) {
-                LogManager.addLog("❌ VPN establish falhou")
-                stopSelf()
-                return START_NOT_STICKY
-            }
+            if (vpnInterface == null) { stopSelf(); return START_NOT_STICKY }
             
             LogManager.addLog("✅ VPN estabelecida")
             
-            // Proteger socket SOCKS
+            // Proteger SOCKS
             try {
                 val sock = Socket()
                 sock.connect(InetSocketAddress("127.0.0.1", XrayCoreService.SOCKS_PORT), 5000)
                 val prot = protect(sock)
-                LogManager.addLog("?? SOCKS protegido: $prot")
+                LogManager.addLog("🔒 SOCKS protect=$prot")
                 sock.close()
             } catch (e: Exception) {
-                LogManager.addLog("⚠️ SOCKS proteção: ${e.message}")
+                LogManager.addLog("⚠️ SOCKS: ${e.message}")
             }
             
             running = true
             
-            // INICIAR TUN2SOCKS NATIVO
+            // TUN2SOCKS
             if (Tun2SocksJNI.isAvailable()) {
                 val fd = Tun2SocksJNI.getFd(vpnInterface!!.fileDescriptor)
-                LogManager.addLog("?? Iniciando Tun2Socks nativo (fd=$fd)...")
-                
-                Thread({
-                    LogManager.addLog("Thread Tun2Socks iniciada")
-                    try {
-                        Tun2SocksJNI.StartTun2socks(
-                            fd,
-                            "127.0.0.1:${XrayCoreService.SOCKS_PORT}",
-                            1500
-                        )
-                    } catch (e: Exception) {
-                        LogManager.addLog("❌ Tun2Socks crash: ${e.message}")
-                    }
-                    LogManager.addLog("Tun2Socks finalizado")
-                }, "Tun2Socks-Native").start()
-                
-                LogManager.addLog("✅ Tun2Socks nativo rodando!")
+                if (fd >= 0) {
+                    LogManager.addLog("🚀 StartTun2socks(fd=$fd)")
+                    Thread {
+                        try {
+                            Tun2SocksJNI.StartTun2socks(fd, "127.0.0.1:${XrayCoreService.SOCKS_PORT}", 1500)
+                        } catch (e: Exception) {
+                            LogManager.addLog("❌ Tun2Socks: ${e.message}")
+                        }
+                    }.start()
+                    LogManager.addLog("✅ Tun2Socks iniciado!")
+                }
             } else {
-                LogManager.addLog("❌ libtun2socks.so não carregou!")
+                // Tentar descobrir por que não carregou
+                LogManager.addLog("❌ libtun2socks indisponível!")
+                
+                // Listar libs disponíveis
+                try {
+                    val nativeDir = File(applicationInfo.nativeLibraryDir)
+                    LogManager.addLog("Native dir: $nativeDir")
+                    nativeDir.listFiles()?.forEach {
+                        LogManager.addLog("  ${it.name} (${it.length()} bytes)")
+                    }
+                } catch (e: Exception) {
+                    LogManager.addLog("Listar erro: ${e.message}")
+                }
             }
             
         } catch (e: Exception) {
-            LogManager.addLog("❌ ERRO: ${e.message}")
+            LogManager.addLog("❌ ${e.message}")
             stopSelf()
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
-        LogManager.addLog("?? Parando VPN...")
+        LogManager.addLog(">>> onDestroy() chamado")
         running = false
         
         try {
             Tun2SocksJNI.StopTun2socks()
-            LogManager.addLog("✅ Tun2Socks parado")
+            LogManager.addLog("StopTun2socks OK")
         } catch (e: Exception) {
-            LogManager.addLog("⚠️ Erro ao parar Tun2Socks: ${e.message}")
+            LogManager.addLog("Stop err: ${e.message}")
         }
         
         xray?.stop()
@@ -141,7 +137,7 @@ class XrayVpnService : VpnService() {
         try { vpnInterface?.close() } catch (e: Exception) {}
         
         stopForeground(STOP_FOREGROUND_REMOVE)
-        LogManager.addLog("✅ VPN completamente parada")
+        LogManager.addLog("✅ VPN destruída")
         super.onDestroy()
     }
 }

@@ -10,23 +10,22 @@ object Tun2SocksJNI {
 
     init {
         try {
-            Log.d(TAG, "Tentando carregar libtun2socks...")
+            Log.d(TAG, "Carregando libtun2socks...")
             System.loadLibrary("tun2socks")
             loaded = true
-            LogManager.addLog("✅ libtun2socks.so carregada!")
+            Log.i(TAG, "✅ libtun2socks.so carregada!")
         } catch (e: UnsatisfiedLinkError) {
             loaded = false
-            loadError = e.message
-            LogManager.addLog("❌ libtun2socks.so ERRO: ${e.message}")
-            Log.e(TAG, "UnsatisfiedLinkError", e)
+            loadError = "UnsatisfiedLinkError: ${e.message}"
+            Log.e(TAG, loadError!!)
         } catch (e: SecurityException) {
             loaded = false
-            loadError = e.message
-            LogManager.addLog("❌ libtun2socks.so SEGURANÇA: ${e.message}")
+            loadError = "SecurityException: ${e.message}"
+            Log.e(TAG, loadError!!)
         } catch (e: Exception) {
             loaded = false
-            loadError = e.message
-            LogManager.addLog("❌ libtun2socks.so OUTRO: ${e.message}")
+            loadError = "${e.javaClass.simpleName}: ${e.message}"
+            Log.e(TAG, loadError!!)
         }
     }
 
@@ -34,16 +33,15 @@ object Tun2SocksJNI {
     external fun StopTun2socks()
 
     fun isAvailable(): Boolean = loaded
+    fun getError(): String? = loadError
 
     fun getFd(fileDescriptor: FileDescriptor): Int {
         return try {
             val field = FileDescriptor::class.java.getDeclaredField("fd")
             field.isAccessible = true
-            val fd = field.getInt(fileDescriptor)
-            LogManager.addLog("📎 FD obtido: $fd")
-            fd
+            field.getInt(fileDescriptor)
         } catch (e: Exception) {
-            LogManager.addLog("❌ getFd erro: ${e.message}")
+            Log.e(TAG, "getFd error: ${e.message}")
             -1
         }
     }

@@ -2,6 +2,7 @@
 #include <android/log.h>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <stdint.h>
 #include <signal.h>
 
@@ -25,7 +26,6 @@ void init_v2() {
     LOGI("start=%p stop=%p", start_func, stop_func);
 }
 
-/* ✅ NOVO: limpa FD_CLOEXEC para o fd sobreviver ao exec() */
 JNIEXPORT jint JNICALL
 Java_com_vpn_xrayvless_Tun2SocksJNI_nativeClearCloexec(JNIEnv *env, jobject thiz, jint fd) {
     int flags = fcntl((int)fd, F_GETFD);

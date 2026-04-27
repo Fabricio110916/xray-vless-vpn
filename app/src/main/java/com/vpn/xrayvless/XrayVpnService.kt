@@ -117,7 +117,7 @@ class XrayVpnService : VpnService() {
                             LogManager.addLog("🚀 ${cmd.joinToString(" ")}")
                             
                             val proc = Runtime.getRuntime().exec(cmd)
-                            LogManager.addLog("✅ TUN rodando! PID=${proc.pid()}")
+                            LogManager.addLog("✅ TUN rodando!")
                             
                             proc.inputStream.bufferedReader().use { reader ->
                                 reader.lines().forEach { line ->

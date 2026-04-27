@@ -54,7 +54,7 @@ class XrayVpnService : VpnService() {
 
             // Iniciar Xray (ele já cuida do TUN internamente)
             xray = XrayCoreService(this)
-            xray!!.start(c)
+            xray!!.start(c, fd)
 
             LogManager.addLog("✅ VPN + Xray TUN ativos!")
         } catch (e: Exception) {

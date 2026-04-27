@@ -14,16 +14,17 @@ class XrayCoreService(private val context: Context) {
     private var job: Job? = null
     private var process: Process? = null
 
-    fun start(config: VlessConfig): Boolean {
+    fun start(config: VlessConfig, tunFd: Int): Boolean {
         if (isRunning) return false
 
         try {
             val configDir = File(context.filesDir, "xray")
             configDir.mkdirs()
 
-            val json = buildXrayJson(config)
-            File(configDir, "config.json").writeText(json)
-            LogManager.addLog("✅ Config salva")
+            val json = buildXrayJson(config, tunFd)
+            val configFile = File(configDir, "config.json")
+            configFile.writeText(json)
+            LogManager.addLog("✅ Config salva (fd=$tunFd)")
 
             copyAssets(configDir)
 
@@ -31,17 +32,22 @@ class XrayCoreService(private val context: Context) {
 
             job = CoroutineScope(Dispatchers.IO).launch {
                 try {
-                    val pb = ProcessBuilder(xrayPath, "run", "-config", File(configDir, "config.json").absolutePath)
-                        .directory(configDir).redirectErrorStream(true)
+                    val pb = ProcessBuilder(xrayPath, "run", "-config", configFile.absolutePath)
+                        .directory(configDir)
+                        .redirectErrorStream(true)
+                    
+                    // Passar o fd como variável de ambiente
+                    pb.environment()["XRAY_TUN_FD"] = tunFd.toString()
+                    
                     process = pb.start()
                     isRunning = true
-                    LogManager.addLog("✅ Xray rodando!")
+                    LogManager.addLog("✅ Xray rodando com TUN fd=$tunFd!")
 
                     launch {
+                        var count = 0
                         process?.inputStream?.bufferedReader()?.use { reader ->
-                            var count = 0
                             reader.lines().forEach { line ->
-                                if (line.isNotBlank() && count < 10) {
+                                if (line.isNotBlank() && count < 20) {
                                     count++
                                     LogManager.addLog("X: $line")
                                 }
@@ -66,8 +72,7 @@ class XrayCoreService(private val context: Context) {
         }
     }
 
-    // Config JSON com TUN inbound NATIVO do Xray!
-    private fun buildXrayJson(c: VlessConfig): String {
+    private fun buildXrayJson(c: VlessConfig, tunFd: Int): String {
         return """
 {
   "log": {"loglevel": "warn"},
@@ -78,6 +83,7 @@ class XrayCoreService(private val context: Context) {
       "protocol": "tun",
       "settings": {
         "mtu": 1500,
+        "fd": $tunFd,
         "stack": "system"
       },
       "sniffing": {

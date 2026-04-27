@@ -19,7 +19,7 @@ class XrayVpnService : VpnService() {
     private var vpnInterface: ParcelFileDescriptor? = null
     @Volatile private var running = false
     private var xray: XrayCoreService? = null
-    private var tun2socksProc: Process? = null
+    private var tun2socksProc: java.lang.Process? = null
 
     override fun onBind(i: Intent?) = LocalBinder()
 
@@ -27,7 +27,7 @@ class XrayVpnService : VpnService() {
         super.onCreate()
         try {
             LogManager.init(this)
-            Tun2SocksJNI.isAvailable() // força carregamento da JNI cedo
+            Tun2SocksJNI.isAvailable()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 getSystemService(NotificationManager::class.java)
                     .createNotificationChannel(
@@ -68,7 +68,6 @@ class XrayVpnService : VpnService() {
             val fd = vpnInterface!!.fd
             LogManager.addLog("FD=$fd")
 
-            // ✅ CRÍTICO: limpar FD_CLOEXEC antes do exec()
             val cleared = Tun2SocksJNI.clearCloexec(fd)
             LogManager.addLog(if (cleared) "✅ FD_CLOEXEC limpo fd=$fd" else "❌ FD_CLOEXEC NÃO limpo!")
 
@@ -94,15 +93,15 @@ class XrayVpnService : VpnService() {
                     val pb = ProcessBuilder(*cmd)
                     pb.environment()["LD_LIBRARY_PATH"] = nativeDir
                     pb.redirectErrorStream(true)
-                    tun2socksProc = pb.start()
-                    LogManager.addLog("✅ tun2socks processo iniciado pid=${tun2socksProc?.pid()}")
-                    tun2socksProc!!.inputStream.bufferedReader().use { br ->
+                    tun2socksProc = pb.start() as java.lang.Process
+                    LogManager.addLog("✅ tun2socks processo iniciado")
+                    (tun2socksProc as java.lang.Process).inputStream.bufferedReader().use { br ->
                         var l: String?
                         while (br.readLine().also { l = it } != null) {
                             LogManager.addLog("TUN: $l")
                         }
                     }
-                    LogManager.addLog("TUN fim: ${tun2socksProc!!.exitValue()}")
+                    LogManager.addLog("TUN fim: ${(tun2socksProc as java.lang.Process).exitValue()}")
                 } catch (e: Exception) {
                     LogManager.addLog("❌ tun2socks: ${e.message}")
                 }
@@ -117,7 +116,7 @@ class XrayVpnService : VpnService() {
 
     override fun onDestroy() {
         running = false
-        try { tun2socksProc?.destroy() } catch (e: Exception) {}
+        try { (tun2socksProc as? java.lang.Process)?.destroy() } catch (e: Exception) {}
         try { xray?.stop() } catch (e: Exception) {}
         try { vpnInterface?.close() } catch (e: Exception) {}
         stopForeground(STOP_FOREGROUND_REMOVE)

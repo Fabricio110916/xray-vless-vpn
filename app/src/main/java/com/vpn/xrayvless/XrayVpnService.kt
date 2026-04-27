@@ -54,7 +54,6 @@ class XrayVpnService : VpnService() {
             
             xray = XrayCoreService(this)
             if (!xray!!.start(c)) { stopSelf(); return START_NOT_STICKY }
-            LogManager.addLog("✅ Xray OK")
             
             val builder = Builder()
                 .setSession(c.remark)
@@ -69,7 +68,6 @@ class XrayVpnService : VpnService() {
             
             vpnInterface = builder.establish()
             if (vpnInterface == null) { stopSelf(); return START_NOT_STICKY }
-            LogManager.addLog("✅ VPN estabelecida")
             
             // Proteger SOCKS
             try {
@@ -81,7 +79,6 @@ class XrayVpnService : VpnService() {
             
             running = true
             
-            // Obter FD
             var fd = -1
             try {
                 val m = ParcelFileDescriptor::class.java.getDeclaredMethod("getFd")
@@ -89,58 +86,32 @@ class XrayVpnService : VpnService() {
                 fd = m.invoke(vpnInterface) as Int
             } catch (e: Exception) {}
             
-            LogManager.addLog("📎 FD=$fd")
+            LogManager.addLog("FD=$fd")
             
             if (fd > 0) {
-                val socksAddr = "127.0.0.1:${XrayCoreService.SOCKS_PORT}"
-                
-                // Tentar executar do nativeLibraryDir (lá tem permissão!)
                 val nativeDir = File(applicationInfo.nativeLibraryDir)
                 val tunExe = File(nativeDir, "libtun2socks.so")
+                val socksAddr = "127.0.0.1:${XrayCoreService.SOCKS_PORT}"
                 
-                // Também verificar se tem tun2socks-arm64 na mesma pasta
-                val tunArm64 = File(nativeDir, "tun2socks-arm64")
-                
-                val exePath = if (tunArm64.exists()) tunArm64.absolutePath 
-                              else if (tunExe.exists()) tunExe.absolutePath 
-                              else ""
-                
-                LogManager.addLog("TUN path: $exePath (exists=${File(exePath).exists()})")
-                
-                if (exePath.isNotEmpty() && File(exePath).exists()) {
+                if (tunExe.exists()) {
                     Thread({
                         try {
-                            // Tornar executável
-                            Runtime.getRuntime().exec(arrayOf("chmod", "755", exePath)).waitFor()
-                            
-                            val cmd = arrayOf(exePath, "-fd", fd.toString(), "-socks", socksAddr, "-mtu", "1500")
+                            val cmd = arrayOf(tunExe.absolutePath, "-fd", fd.toString(), "-socks", socksAddr, "-mtu", "1500")
                             LogManager.addLog("🚀 ${cmd.joinToString(" ")}")
-                            
                             val proc = Runtime.getRuntime().exec(cmd)
-                            LogManager.addLog("✅ TUN rodando!")
+                            LogManager.addLog("✅ TUN executando!")
                             
-                            proc.inputStream.bufferedReader().use { reader ->
-                                reader.lines().forEach { line ->
-                                    if (line.isNotBlank()) LogManager.addLog("TUN: $line")
-                                }
-                            }
+                            // Consumir stdout para não travar
+                            Thread({ proc.inputStream.bufferedReader().use { it.readLine() } }).start()
+                            Thread({ proc.errorStream.bufferedReader().use { it.readLine() } }).start()
+                            
+                            proc.waitFor()
                             LogManager.addLog("TUN finalizado: ${proc.exitValue()}")
                         } catch (e: Exception) {
-                            LogManager.addLog("❌ TUN exe: ${e.message}")
-                            // Último fallback: JNI
-                            if (Tun2SocksJNI.isAvailable()) {
-                                LogManager.addLog("Fallback JNI...")
-                                Tun2SocksJNI.StartTun2socks(fd, socksAddr, 1500)
-                            }
+                            LogManager.addLog("TUN: ${e.message}")
                         }
                     }, "tun2socks").start()
                     LogManager.addLog("✅ Thread TUN iniciada")
-                } else {
-                    LogManager.addLog("❌ Nenhum executável encontrado em $nativeDir")
-                    // Listar o que tem
-                    nativeDir.listFiles()?.forEach { 
-                        LogManager.addLog("  ${it.name}")
-                    }
                 }
             }
             

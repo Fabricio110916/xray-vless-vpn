@@ -7,11 +7,11 @@ object Tun2SocksJNI {
 
     init {
         try {
-            // Primeiro carregar a lib Go (símbolos base)
+            // 1. Carregar libtun2socks primeiro (registra símbolos globalmente)
             System.loadLibrary("tun2socks")
             LogManager.addLog("✅ libtun2socks.so carregada")
             
-            // Depois carregar o wrapper JNI
+            // 2. Carregar wrapper JNI (usa dlsym para encontrar símbolos)
             System.loadLibrary("tun2socks_jni")
             LogManager.addLog("✅ libtun2socks_jni.so carregada")
             
@@ -31,7 +31,7 @@ object Tun2SocksJNI {
         return try {
             val m = android.os.ParcelFileDescriptor::class.java.getDeclaredMethod("getFd")
             m.isAccessible = true
-            189 // valor hardcoded que funcionou
+            m.invoke(null) as Int
         } catch (e: Exception) {
             189
         }

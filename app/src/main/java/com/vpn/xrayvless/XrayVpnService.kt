@@ -66,33 +66,39 @@ class XrayVpnService : VpnService() {
             LogManager.addLog("FD=$fd")
             
             if (fd > 0) {
-                val socksAddr = "127.0.0.1:${XrayCoreService.SOCKS_PORT}"
+                val proxyAddr = "socks5://127.0.0.1:${XrayCoreService.SOCKS_PORT}"
                 val nativeDir = applicationInfo.nativeLibraryDir
-                
-                // Procurar executável (agora como .so)
                 val exeFile = File(nativeDir, "libtun2socks_exec.so")
-                LogManager.addLog("Procurando: ${exeFile.absolutePath} existe=${exeFile.exists()}")
-                
-                // Listar o que tem no diretório
-                File(nativeDir).listFiles()?.filter { it.name.contains("tun") }?.forEach {
-                    LogManager.addLog("  ${it.name} (${it.length()} bytes)")
-                }
                 
                 if (exeFile.exists()) {
                     Thread({
                         try {
-                            val cmd = arrayOf("/system/bin/linker64", exeFile.absolutePath, "-fd", fd.toString(), "-socks", socksAddr, "-mtu", "1500")
-                            LogManager.addLog("🚀 ${cmd.joinToString(" ")}")
+                            // Argumentos corretos do tun2socks:
+                            // -device fd://N -proxy socks5://host:port
+                            val cmd = arrayOf(
+                                "/system/bin/linker64",
+                                exeFile.absolutePath,
+                                "-device", "fd://$fd",
+                                "-proxy", proxyAddr
+                            )
+                            LogManager.addLog("?? ${cmd.joinToString(" ")}")
                             val proc = Runtime.getRuntime().exec(cmd)
                             LogManager.addLog("✅ TUN!")
-                            Thread({ proc.errorStream.bufferedReader().use { var l: String?; while (it.readLine().also { l = it } != null) { LogManager.addLog("TUN: $l") } } }).start()
+                            
+                            Thread({ 
+                                var l: String?
+                                proc.errorStream.bufferedReader().use { 
+                                    while (it.readLine().also { l = it } != null) {
+                                        LogManager.addLog("TUN: $l")
+                                    }
+                                }
+                            }).start()
+                            
                             proc.waitFor()
                             LogManager.addLog("TUN fim: ${proc.exitValue()}")
                         } catch (e: Exception) { LogManager.addLog("TUN: ${e.message}") }
                     }, "tun").start()
                     LogManager.addLog("✅ TUN iniciado!")
-                } else {
-                    LogManager.addLog("❌ libtun2socks_exec.so não encontrado!")
                 }
             }
         } catch (e: Exception) { LogManager.addLog("❌ ${e.message}"); stopSelf() }
@@ -107,4 +113,3 @@ class XrayVpnService : VpnService() {
         super.onDestroy()
     }
 }
-// 1777315379

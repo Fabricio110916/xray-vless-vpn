@@ -64,75 +64,70 @@ class XrayVpnService : VpnService() {
                 .setMtu(1500)
                 .setBlocking(true)
             
-            // EXCLUIR APP DA VPN (previne loop)
-            try {
-                builder.addDisallowedApplication(packageName)
-                LogManager.addLog("✅ App excluído: $packageName")
-            } catch (e: Exception) {
-                LogManager.addLog("⚠️ Excluir app: ${e.message}")
-            }
+            try { builder.addDisallowedApplication(packageName) } catch (e: Exception) {}
             
             vpnInterface = builder.establish()
             if (vpnInterface == null) { stopSelf(); return START_NOT_STICKY }
             
-            // PROTEGER SOCKET SOCKS (ANTES de iniciar Tun2Socks)
+            // Proteger SOCKS
             try {
                 val sock = Socket()
                 sock.connect(InetSocketAddress("127.0.0.1", XrayCoreService.SOCKS_PORT), 5000)
-                val ok = protect(sock)
-                LogManager.addLog("🔒 SOCKS protegido: $ok")
+                protect(sock)
                 sock.close()
-            } catch (e: Exception) {
-                LogManager.addLog("⚠️ SOCKS: ${e.message}")
-            }
-            
-            // Proteger DNS também
-            try {
-                val dns = Socket()
-                dns.connect(InetSocketAddress("1.1.1.1", 53), 3000)
-                protect(dns)
-                dns.close()
-                LogManager.addLog("🔒 DNS 1.1.1.1 protegido")
-            } catch (e: Exception) {}
-            
-            try {
-                val dns = Socket()
-                dns.connect(InetSocketAddress("8.8.8.8", 53), 3000)
-                protect(dns)
-                dns.close()
-                LogManager.addLog("🔒 DNS 8.8.8.8 protegido")
             } catch (e: Exception) {}
             
             running = true
             
-            // Obter FD
+            // NÃO usar detachFd() - ele invalida o ParcelFileDescriptor!
             var fd = -1
             try {
-                val m = ParcelFileDescriptor::class.java.getDeclaredMethod("getFd")
-                m.isAccessible = true
-                fd = m.invoke(vpnInterface) as Int
-            } catch (e: Exception) {}
-            if (fd < 0) try { fd = vpnInterface!!.detachFd() } catch (e: Exception) {}
-            if (fd < 0) try {
                 val f = FileDescriptor::class.java.getDeclaredField("fd")
                 f.isAccessible = true
                 fd = f.getInt(vpnInterface!!.fileDescriptor)
-            } catch (e: Exception) {}
+                LogManager.addLog("FD via campo fd: $fd")
+            } catch (e: Exception) {
+                LogManager.addLog("campo fd falhou: ${e.message}")
+            }
             
-            LogManager.addLog("FD=$fd Tun=${Tun2SocksJNI.isAvailable()}")
+            // Tentar também getFd()
+            if (fd < 0) {
+                try {
+                    val m = ParcelFileDescriptor::class.java.getDeclaredMethod("getFd")
+                    m.isAccessible = true
+                    fd = m.invoke(vpnInterface) as Int
+                    LogManager.addLog("FD via getFd: $fd")
+                } catch (e: Exception) {
+                    LogManager.addLog("getFd falhou: ${e.message}")
+                }
+            }
+            
+            LogManager.addLog("FD final=$fd Tun2Socks=${Tun2SocksJNI.isAvailable()}")
             
             if (fd >= 0 && Tun2SocksJNI.isAvailable()) {
                 val finalFd = fd
-                Thread({
-                    LogManager.addLog("Tun2Socks thread iniciando...")
+                val thread = Thread({
+                    // Configurar handler de exceção
+                    Thread.currentThread().setUncaughtExceptionHandler { _, ex ->
+                        LogManager.addLog("❌ CRASH na thread Tun2Socks: ${ex.javaClass.simpleName}: ${ex.message}")
+                        LogManager.addLog("Stack: ${ex.stackTraceToString().take(300)}")
+                    }
+                    
+                    LogManager.addLog(">>> StartTun2socks(fd=$finalFd, 127.0.0.1:${XrayCoreService.SOCKS_PORT}, 1500)")
                     try {
                         Tun2SocksJNI.StartTun2socks(finalFd, "127.0.0.1:${XrayCoreService.SOCKS_PORT}", 1500)
-                        LogManager.addLog("Tun2Socks retornou")
+                        LogManager.addLog("<<< StartTun2socks retornou normalmente")
                     } catch (e: Exception) {
-                        LogManager.addLog("❌ Tun2Socks: ${e.message}")
+                        LogManager.addLog("❌ StartTun2socks exceção: ${e.javaClass.simpleName}: ${e.message}")
                     }
-                }).start()
-                LogManager.addLog("✅ VPN ativa!")
+                }, "Tun2Socks-Native")
+                
+                thread.setUncaughtExceptionHandler { _, ex ->
+                    LogManager.addLog("❌ Thread Tun2Socks não capturada: ${ex.message}")
+                }
+                
+                thread.start()
+                LogManager.addLog("✅ Thread iniciada")
             }
             
         } catch (e: Exception) {

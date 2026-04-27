@@ -7,14 +7,10 @@ object Tun2SocksJNI {
 
     init {
         try {
-            // 1. Carregar libtun2socks primeiro (registra símbolos globalmente)
             System.loadLibrary("tun2socks")
             LogManager.addLog("✅ libtun2socks.so carregada")
-            
-            // 2. Carregar wrapper JNI (usa dlsym para encontrar símbolos)
             System.loadLibrary("tun2socks_jni")
             LogManager.addLog("✅ libtun2socks_jni.so carregada")
-            
             loaded = true
         } catch (e: UnsatisfiedLinkError) {
             loaded = false
@@ -33,7 +29,7 @@ object Tun2SocksJNI {
             m.isAccessible = true
             m.invoke(null) as Int
         } catch (e: Exception) {
-            189
+            -1
         }
     }
 }

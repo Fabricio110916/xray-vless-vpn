@@ -11,32 +11,34 @@ android {
         applicationId "com.vpn.xrayvless"
         minSdk 21
         targetSdk 33
-        versionCode 3
-        versionName "3.0"
+        versionCode 7
+        versionName "7.0"
+        ndk { abiFilters 'arm64-v8a' }
     }
 
     buildTypes {
-        debug {
-            minifyEnabled false
-        }
-        release {
-            minifyEnabled false
-        }
+        debug { minifyEnabled false }
+        release { minifyEnabled false }
     }
     
     compileOptions {
-    
-    sourceSets {
-        main {
-            jniLibs.srcDirs = ["src/main/jniLibs"]
-        }
-    }
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
     
-    kotlinOptions {
-        jvmTarget = '1.8'
+    kotlinOptions { jvmTarget = '1.8' }
+    
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+            version "3.22.1"
+        }
+    }
+    
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
     }
 }
 
@@ -47,29 +49,4 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
     implementation 'com.google.code.gson:gson:2.10.1'
-}
-
-android {
-    externalNativeBuild {
-        cmake {
-            path "src/main/cpp/CMakeLists.txt"
-        }
-    }
-}
-
-android {
-    externalNativeBuild {
-        cmake {
-            path "src/main/cpp/CMakeLists.txt"
-            version "3.22.1"
-        }
-    }
-    defaultConfig {
-        externalNativeBuild {
-            cmake {
-                arguments "-DANDROID_STL=none"
-                abiFilters "arm64-v8a"
-            }
-        }
-    }
 }

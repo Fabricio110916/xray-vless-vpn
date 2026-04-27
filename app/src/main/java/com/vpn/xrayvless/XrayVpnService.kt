@@ -9,6 +9,7 @@ import android.net.VpnService
 import android.os.*
 import androidx.core.app.NotificationCompat
 import com.google.gson.Gson
+import java.io.File
 import java.io.FileDescriptor
 import java.net.*
 
@@ -55,21 +56,54 @@ class XrayVpnService : VpnService() {
             
             vpnInterface = b.establish() ?: run { stopSelf(); return START_NOT_STICKY }
             
-            try { val s = Socket(); s.connect(InetSocketAddress("127.0.0.1", XrayCoreService.SOCKS_PORT), 5000); protect(s); s.close() } catch (e: Exception) {}
+            try { val sock = Socket(); sock.connect(InetSocketAddress("127.0.0.1", XrayCoreService.SOCKS_PORT), 5000); protect(sock); sock.close() } catch (e: Exception) {}
             
             running = true
+            
             var fd = -1
             try { val m = ParcelFileDescriptor::class.java.getDeclaredMethod("getFd"); m.isAccessible = true; fd = m.invoke(vpnInterface) as Int } catch (e: Exception) {}
             
-            LogManager.addLog("FD=$fd JNI=${Tun2SocksJNI.isAvailable()}")
+            LogManager.addLog("FD=$fd")
             
-            if (fd > 0 && Tun2SocksJNI.isAvailable()) {
-                Thread({
-                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
-                    LogManager.addLog("?? JNI StartTun2socks(fd=$fd)")
-                    Tun2SocksJNI.StartTun2socks(fd, "127.0.0.1:${XrayCoreService.SOCKS_PORT}", 1500)
-                }, "TUN").start()
-                LogManager.addLog("✅ TUN JNI!")
+            if (fd > 0) {
+                val socksAddr = "127.0.0.1:${XrayCoreService.SOCKS_PORT}"
+                val nativeExe = File(applicationInfo.nativeLibraryDir, "tun2socks-arm64")
+                
+                LogManager.addLog("Exe: ${nativeExe.absolutePath} existe=${nativeExe.exists()}")
+                
+                if (nativeExe.exists()) {
+                    Thread({
+                        try {
+                            val cmd = arrayOf(
+                                "/system/bin/linker64",
+                                nativeExe.absolutePath,
+                                "-fd", fd.toString(),
+                                "-socks", socksAddr,
+                                "-mtu", "1500"
+                            )
+                            LogManager.addLog("🚀 ${cmd.joinToString(" ")}")
+                            val proc = Runtime.getRuntime().exec(cmd)
+                            LogManager.addLog("✅ TUN via linker64!")
+                            
+                            Thread({ 
+                                var line: String?
+                                proc.errorStream.bufferedReader().use { 
+                                    while (it.readLine().also { line = it } != null) {
+                                        LogManager.addLog("TUN: $line")
+                                    }
+                                }
+                            }).start()
+                            
+                            proc.waitFor()
+                            LogManager.addLog("TUN fim: ${proc.exitValue()}")
+                        } catch (e: Exception) {
+                            LogManager.addLog("TUN: ${e.message}")
+                        }
+                    }, "tun2socks").start()
+                    LogManager.addLog("✅ Plano B ativo!")
+                } else {
+                    LogManager.addLog("❌ tun2socks-arm64 sumiu!")
+                }
             }
         } catch (e: Exception) { LogManager.addLog("❌ ${e.message}"); stopSelf() }
         return START_NOT_STICKY
@@ -77,10 +111,10 @@ class XrayVpnService : VpnService() {
 
     override fun onDestroy() {
         running = false
-        try { Tun2SocksJNI.StopTun2socks() } catch (e: Exception) {}
-        xray?.stop()
+        try { xray?.stop() } catch (e: Exception) {}
         try { vpnInterface?.close() } catch (e: Exception) {}
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
 }
+// 1777313917271524621

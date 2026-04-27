@@ -65,8 +65,13 @@ class XrayVpnService : VpnService() {
             vpnInterface = b.establish() ?: run { stopSelf(); return START_NOT_STICKY }
             running = true
 
-            val fd = vpnInterface!!.fd
+            var fd = vpnInterface!!.fd
             LogManager.addLog("FD=$fd")
+            val dupFd = Tun2SocksJNI.dupFd(fd)
+            if (dupFd > 0) {
+                LogManager.addLog("✅ fd duplicado: $fd -> $dupFd")
+                fd = dupFd
+            }
 
             // Limpar FD_CLOEXEC para o fd sobreviver ao exec()
             val cleared = Tun2SocksJNI.clearCloexec(fd)

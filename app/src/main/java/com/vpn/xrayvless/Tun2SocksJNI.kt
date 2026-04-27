@@ -9,24 +9,13 @@ object Tun2SocksJNI {
             loaded = true
             LogManager.addLog("✅ tun2socks_jni carregado")
         } catch (e: UnsatisfiedLinkError) {
+            loaded = false
             LogManager.addLog("❌ tun2socks_jni: ${e.message}")
         }
     }
 
+    external fun clearCloexec(fd: Int): Boolean
+    external fun dupFd(fd: Int): Int
+
     fun isAvailable(): Boolean = loaded
-
-    /** Limpa FD_CLOEXEC — DEVE ser chamado antes do exec() do tun2socks */
-    fun clearCloexec(fd: Int): Boolean {
-        if (!loaded) { LogManager.addLog("⚠️ JNI não carregado, FD_CLOEXEC não limpo!"); return false }
-        return try {
-            nativeClearCloexec(fd) >= 0
-        } catch (e: Exception) {
-            LogManager.addLog("❌ clearCloexec: ${e.message}")
-            false
-        }
-    }
-
-    external fun nativeClearCloexec(fd: Int): Int
-    external fun StartTun2socks(tunFd: Int, socksAddr: String, mtu: Int)
-    external fun StopTun2socks()
 }

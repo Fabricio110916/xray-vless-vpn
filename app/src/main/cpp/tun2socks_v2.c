@@ -3,6 +3,8 @@
 #include <dlfcn.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
+#include <string.h>
 
 #define TAG "tun2socks_jni"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -19,7 +21,7 @@ Java_com_vpn_xrayvless_Tun2SocksJNI_clearCloexec(JNIEnv* env, jclass clazz, jint
         LOGE("fcntl F_SETFD fd=%d failed: %s", fd, strerror(errno));
         return JNI_FALSE;
     }
-    LOGI("FD_CLOEXEC cleared for fd=%d (flags: 0x%x -> 0x%x)", fd, flags, flags & ~FD_CLOEXEC);
+    LOGI("FD_CLOEXEC cleared for fd=%d", fd);
     return JNI_TRUE;
 }
 
@@ -30,7 +32,6 @@ Java_com_vpn_xrayvless_Tun2SocksJNI_dupFd(JNIEnv* env, jclass clazz, jint fd) {
         LOGE("dup fd=%d failed: %s", fd, strerror(errno));
         return -1;
     }
-    // Limpar CLOEXEC no novo fd
     int flags = fcntl(newfd, F_GETFD);
     fcntl(newfd, F_SETFD, flags & ~FD_CLOEXEC);
     LOGI("fd=%d duplicado para fd=%d", fd, newfd);

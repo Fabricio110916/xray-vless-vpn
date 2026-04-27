@@ -51,10 +51,24 @@ class XrayVpnService : VpnService() {
             val json = i?.getStringExtra("vless_config") ?: run { stopSelf(); return START_NOT_STICKY }
             val c = Gson().fromJson(json, VlessConfig::class.java)
             
+            // 1. Iniciar Xray
             xray = XrayCoreService(this)
             if (!xray!!.start(c)) { stopSelf(); return START_NOT_STICKY }
-            LogManager.addLog("✅ Xray OK")
             
+            // 2. Proteger socket SOCKS ANTES da VPN (usando socket normal)
+            Thread {
+                try {
+                    Thread.sleep(500)
+                    val s = Socket()
+                    s.connect(InetSocketAddress("127.0.0.1", XrayCoreService.SOCKS_PORT), 5000)
+                    LogManager.addLog("🔒 SOCKS conectado: ${s.isConnected}")
+                    s.close()
+                } catch (e: Exception) {
+                    LogManager.addLog("⚠️ SOCKS pre: ${e.message}")
+                }
+            }.start()
+            
+            // 3. Criar VPN
             val builder = Builder()
                 .setSession(c.remark)
                 .addAddress("10.0.0.2", 24)
@@ -70,73 +84,67 @@ class XrayVpnService : VpnService() {
             if (vpnInterface == null) { stopSelf(); return START_NOT_STICKY }
             LogManager.addLog("✅ VPN estabelecida")
             
-            // Proteger socket SOCKS (IMPORTANTE: fazer DEPOIS do establish)
+            // 4. Proteger via DatagramChannel (mais confiável)
+            try {
+                val dc = DatagramChannel.open()
+                dc.socket().bind(InetSocketAddress(0))
+                dc.connect(InetSocketAddress("127.0.0.1", XrayCoreService.SOCKS_PORT))
+                val ok = protect(dc.socket())
+                LogManager.addLog("🔒 SOCKS protect(DatagramChannel)=$ok")
+                dc.close()
+            } catch (e: Exception) {
+                LogManager.addLog("⚠️ DC: ${e.message}")
+            }
+            
+            // 5. Proteger via Socket normal
             try {
                 val sock = Socket()
+                sock.bind(InetSocketAddress(0))
                 sock.connect(InetSocketAddress("127.0.0.1", XrayCoreService.SOCKS_PORT), 5000)
-                val result = protect(sock)
-                LogManager.addLog("🔒 SOCKS protect=$result")
+                val ok = protect(sock)
+                LogManager.addLog("🔒 SOCKS protect(Socket)=$ok")
                 sock.close()
             } catch (e: Exception) {
-                LogManager.addLog("⚠️ SOCKS: ${e.message}")
+                LogManager.addLog("⚠️ Socket: ${e.message}")
             }
             
             running = true
             
-            // Obter FD
+            // 6. Obter FD
             var fd = -1
             try {
                 val m = ParcelFileDescriptor::class.java.getDeclaredMethod("getFd")
                 m.isAccessible = true
                 fd = m.invoke(vpnInterface) as Int
-                LogManager.addLog("📎 FD=$fd")
-            } catch (e: Exception) {
-                LogManager.addLog("❌ FD: ${e.message}")
-            }
+            } catch (e: Exception) {}
+            
+            LogManager.addLog("📎 FD=$fd Tun=${Tun2SocksJNI.isAvailable()}")
             
             if (fd > 0 && Tun2SocksJNI.isAvailable()) {
-                val finalFd = fd
-                val socksAddr = "127.0.0.1:${XrayCoreService.SOCKS_PORT}"
-                
                 Thread({
                     android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
                     Thread.currentThread().setUncaughtExceptionHandler { _, ex ->
-                        LogManager.addLog("❌ TUN crash: ${ex.javaClass.simpleName}: ${ex.message}")
-                        LogManager.addLog("Stack: ${ex.stackTraceToString().take(200)}")
+                        LogManager.addLog("❌ TUN: ${ex.message}")
                     }
-                    
-                    LogManager.addLog("🚀 StartTun2socks(fd=$finalFd, socks=$socksAddr)")
-                    try {
-                        Tun2SocksJNI.StartTun2socks(finalFd, socksAddr, 1500)
-                    } catch (e: UnsatisfiedLinkError) {
-                        LogManager.addLog("❌ JNI: ${e.message}")
-                    } catch (e: Exception) {
-                        LogManager.addLog("❌ TUN: ${e.javaClass.simpleName}: ${e.message}")
-                    }
-                    LogManager.addLog("TUN finalizado")
-                }, "TUN-Thread").start()
-                
+                    LogManager.addLog("🚀 StartTun2socks(fd=$fd)")
+                    Tun2SocksJNI.StartTun2socks(fd, "127.0.0.1:${XrayCoreService.SOCKS_PORT}", 1500)
+                }, "TUN").start()
                 LogManager.addLog("✅ VPN ATIVA!")
-            } else {
-                LogManager.addLog("❌ fd=$fd tun=${Tun2SocksJNI.isAvailable()}")
             }
             
         } catch (e: Exception) {
-            LogManager.addLog("❌ FATAL: ${e.message}")
-            LogManager.addLog("Stack: ${e.stackTraceToString().take(200)}")
+            LogManager.addLog("❌ ${e.message}")
             stopSelf()
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
-        LogManager.addLog("🛑 onDestroy")
         running = false
         try { Tun2SocksJNI.StopTun2socks() } catch (e: Exception) {}
         xray?.stop()
         try { vpnInterface?.close() } catch (e: Exception) {}
         stopForeground(STOP_FOREGROUND_REMOVE)
-        LogManager.addLog("✅ VPN destruída")
         super.onDestroy()
     }
 }

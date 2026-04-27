@@ -14,43 +14,31 @@ class XrayCoreService(private val context: Context) {
     private var job: Job? = null
     private var process: Process? = null
 
-    fun start(config: VlessConfig, tunFd: Int): Boolean {
+    fun start(config: VlessConfig): Boolean {
         if (isRunning) return false
 
         try {
             val configDir = File(context.filesDir, "xray")
             configDir.mkdirs()
 
-            val json = buildXrayJson(config, tunFd)
-            val configFile = File(configDir, "config.json")
-            configFile.writeText(json)
-            LogManager.addLog("✅ Config salva (fd=$tunFd)")
-
+            val json = buildXrayJson(config)
+            File(configDir, "config.json").writeText(json)
             copyAssets(configDir)
 
             val xrayPath = File(context.applicationInfo.nativeLibraryDir, "libxray.so").absolutePath
 
             job = CoroutineScope(Dispatchers.IO).launch {
                 try {
-                    val pb = ProcessBuilder(xrayPath, "run", "-config", configFile.absolutePath)
-                        .directory(configDir)
-                        .redirectErrorStream(true)
-                    
-                    // Passar o fd como variável de ambiente
-                    pb.environment()["XRAY_TUN_FD"] = tunFd.toString()
-                    
-                    process = pb.start()
+                    process = ProcessBuilder(xrayPath, "run", "-config", File(configDir, "config.json").absolutePath)
+                        .directory(configDir).redirectErrorStream(true).start()
                     isRunning = true
-                    LogManager.addLog("✅ Xray rodando com TUN fd=$tunFd!")
+                    LogManager.addLog("✅ Xray SOCKS5:${SOCKS_PORT}")
 
                     launch {
                         var count = 0
                         process?.inputStream?.bufferedReader()?.use { reader ->
                             reader.lines().forEach { line ->
-                                if (line.isNotBlank() && count < 20) {
-                                    count++
-                                    LogManager.addLog("X: $line")
-                                }
+                                if (line.isNotBlank() && count < 5) { count++; LogManager.addLog("X: $line") }
                             }
                         }
                     }
@@ -65,70 +53,35 @@ class XrayCoreService(private val context: Context) {
 
             Thread.sleep(2000)
             return isRunning
-
         } catch (e: Exception) {
             LogManager.addLog("❌ ${e.message}")
             return false
         }
     }
 
-    private fun buildXrayJson(c: VlessConfig, tunFd: Int): String {
+    private fun buildXrayJson(c: VlessConfig): String {
         return """
 {
   "log": {"loglevel": "warn"},
-  "dns": {"servers": ["1.1.1.1", "8.8.8.8"]},
-  "inbounds": [
-    {
-      "tag": "tun-in",
-      "protocol": "tun",
-      "settings": {
-        "mtu": 1500,
-        "fd": $tunFd,
-        "stack": "system"
-      },
-      "sniffing": {
-        "enabled": true,
-        "destOverride": ["http", "tls"]
-      }
+  "inbounds": [{
+    "tag": "socks-in",
+    "port": $SOCKS_PORT,
+    "listen": "127.0.0.1",
+    "protocol": "socks",
+    "settings": {"auth": "noauth", "udp": true}
+  }],
+  "outbounds": [{
+    "tag": "proxy",
+    "protocol": "vless",
+    "settings": {"vnext": [{"address": "${c.server}", "port": ${c.port}, "users": [{"id": "${c.uuid}", "encryption": "${c.encryption}"}]}]},
+    "streamSettings": {
+      "network": "${c.type}",
+      "security": "${c.security}",
+      "tlsSettings": {"serverName": "${c.sni.ifEmpty { c.server }}", "allowInsecure": ${c.insecure || c.allowInsecure}},
+      "xhttpSettings": {"host": "${c.host}", "mode": "${c.mode}", "path": "${c.path}"}
     }
-  ],
-  "outbounds": [
-    {
-      "tag": "proxy",
-      "protocol": "vless",
-      "settings": {
-        "vnext": [{
-          "address": "${c.server}",
-          "port": ${c.port},
-          "users": [{
-            "id": "${c.uuid}",
-            "encryption": "${c.encryption}",
-            "flow": "${c.flow}"
-          }]
-        }]
-      },
-      "streamSettings": {
-        "network": "${c.type}",
-        "security": "${c.security}",
-        "tlsSettings": {
-          "serverName": "${c.sni.ifEmpty { c.server }}",
-          "allowInsecure": ${c.insecure || c.allowInsecure},
-          "alpn": [${c.alpn.split(",").joinToString(", ") { "\"${it.trim()}\"" }}]
-        },
-        "xhttpSettings": {
-          "host": "${c.host}",
-          "mode": "${c.mode}",
-          "path": "${c.path}"
-        }
-      }
-    },
-    {"tag": "direct", "protocol": "freedom"}
-  ],
-  "routing": {
-    "rules": [
-      {"type": "field", "inboundTag": ["tun-in"], "outboundTag": "proxy"}
-    ]
-  }
+  }, {"tag": "direct", "protocol": "freedom"}],
+  "routing": {"rules": [{"type": "field", "inboundTag": ["socks-in"], "outboundTag": "proxy"}]}
 }
 """.trimIndent()
     }
@@ -137,9 +90,7 @@ class XrayCoreService(private val context: Context) {
         listOf("geosite.dat", "geoip.dat").forEach { name ->
             val dest = File(configDir, name)
             if (!dest.exists()) {
-                try {
-                    context.assets.open(name).use { it.copyTo(dest.outputStream()) }
-                } catch (e: Exception) {}
+                try { context.assets.open(name).use { it.copyTo(dest.outputStream()) } } catch (e: Exception) {}
             }
         }
     }

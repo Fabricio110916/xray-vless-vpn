@@ -8,7 +8,6 @@ import android.net.VpnService
 import android.os.*
 import androidx.core.app.NotificationCompat
 import com.google.gson.Gson
-import java.io.File
 
 class XrayVpnService : VpnService() {
 
@@ -17,22 +16,17 @@ class XrayVpnService : VpnService() {
     }
 
     private var vpnInterface: ParcelFileDescriptor? = null
-    @Volatile private var running = false
     private var xray: XrayCoreService? = null
-    private var tun2socksProc: java.lang.Process? = null
 
     override fun onBind(i: Intent?) = LocalBinder()
 
     override fun onCreate() {
         super.onCreate()
-        try {
-            LogManager.init(this)
-            Tun2SocksJNI.isAvailable()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                getSystemService(NotificationManager::class.java)
-                    .createNotificationChannel(NotificationChannel("x", "VPN", NotificationManager.IMPORTANCE_LOW))
-            }
-        } catch (e: Exception) {}
+        LogManager.init(this)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            getSystemService(NotificationManager::class.java)
+                .createNotificationChannel(NotificationChannel("x", "VPN", NotificationManager.IMPORTANCE_LOW))
+        }
     }
 
     override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
@@ -44,9 +38,8 @@ class XrayVpnService : VpnService() {
             else startForeground(1, n)
 
             val c = Gson().fromJson(i?.getStringExtra("vless_config"), VlessConfig::class.java)
-            xray = XrayCoreService(this)
-            if (!xray!!.start(c)) { stopSelf(); return START_NOT_STICKY }
 
+            // Criar a VPN builder
             val b = Builder()
                 .setSession(c.remark).addAddress("10.0.0.2", 24)
                 .addDnsServer("1.1.1.1").addDnsServer("8.8.8.8")
@@ -54,49 +47,16 @@ class XrayVpnService : VpnService() {
             try { b.addDisallowedApplication(packageName) } catch (e: Exception) {}
 
             vpnInterface = b.establish() ?: run { stopSelf(); return START_NOT_STICKY }
-            running = true
-
-            val nativeDir = applicationInfo.nativeLibraryDir
-            val exeFile = File(nativeDir, "libtun2socks_exec.so")
             
-            // Usar detachFd() para obter um fd que sobrevive ao ParcelFileDescriptor
+            // Passar o fd para o Xray Core (que tem TUN inbound nativo!)
             val fd = vpnInterface!!.detachFd()
-            LogManager.addLog("FD via detachFd: $fd")
+            LogManager.addLog("FD=$fd - Xray TUN nativo!")
 
-            if (fd < 0 || !exeFile.exists()) {
-                LogManager.addLog("❌ fd=$fd exe=${exeFile.exists()}")
-                stopSelf(); return START_NOT_STICKY
-            }
+            // Iniciar Xray (ele já cuida do TUN internamente)
+            xray = XrayCoreService(this)
+            xray!!.start(c)
 
-            Thread({
-                try {
-                    val cmd = arrayOf(
-                        exeFile.absolutePath,
-                        "-device", "fd://$fd",
-                        "-proxy", "socks5://127.0.0.1:${XrayCoreService.SOCKS_PORT}",
-                        "-loglevel", "warn"
-                    )
-                    LogManager.addLog("▶ ${cmd.joinToString(" ")}")
-                    val pb = ProcessBuilder(*cmd)
-                    pb.environment()["LD_LIBRARY_PATH"] = nativeDir
-                    pb.redirectErrorStream(true)
-                    tun2socksProc = pb.start() as java.lang.Process
-                    LogManager.addLog("✅ tun2socks iniciado")
-                    
-                    (tun2socksProc as java.lang.Process).inputStream.bufferedReader().use { br ->
-                        var l: String?
-                        while (br.readLine().also { l = it } != null) {
-                            LogManager.addLog("TUN: $l")
-                        }
-                    }
-                    val exit = (tun2socksProc as java.lang.Process).exitValue()
-                    LogManager.addLog("TUN fim exitCode=$exit")
-                    if (running) { running = false; stopSelf() }
-                } catch (e: Exception) {
-                    LogManager.addLog("❌ tun2socks: ${e.message}")
-                }
-            }, "tun2socks").start()
-
+            LogManager.addLog("✅ VPN + Xray TUN ativos!")
         } catch (e: Exception) {
             LogManager.addLog("❌ ${e.message}")
             stopSelf()
@@ -105,9 +65,7 @@ class XrayVpnService : VpnService() {
     }
 
     override fun onDestroy() {
-        running = false
-        try { (tun2socksProc as? java.lang.Process)?.destroy() } catch (e: Exception) {}
-        try { xray?.stop() } catch (e: Exception) {}
+        xray?.stop()
         try { vpnInterface?.close() } catch (e: Exception) {}
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()

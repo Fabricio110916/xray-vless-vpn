@@ -22,33 +22,26 @@ class XrayCoreService(private val context: Context) {
             configDir.mkdirs()
 
             val json = buildXrayJson(config)
-            val configFile = File(configDir, "config.json")
-            configFile.writeText(json)
-            LogManager.addLog("✅ Config completa salva")
+            File(configDir, "config.json").writeText(json)
+            LogManager.addLog("✅ Config salva")
 
             copyAssets(configDir)
 
-            val xrayPath = findXrayExecutable(configDir)
-            if (xrayPath == null) {
-                LogManager.addLog("❌ Xray não encontrado")
-                return false
-            }
+            val xrayPath = File(context.applicationInfo.nativeLibraryDir, "libxray.so").absolutePath
 
             job = CoroutineScope(Dispatchers.IO).launch {
                 try {
-                    val pb = ProcessBuilder(xrayPath, "run", "-config", configFile.absolutePath)
-                        .directory(configDir)
-                        .redirectErrorStream(true)
-                    
+                    val pb = ProcessBuilder(xrayPath, "run", "-config", File(configDir, "config.json").absolutePath)
+                        .directory(configDir).redirectErrorStream(true)
                     process = pb.start()
                     isRunning = true
-                    LogManager.addLog("✅ Xray SOCKS5 rodando")
+                    LogManager.addLog("✅ Xray rodando!")
 
                     launch {
                         process?.inputStream?.bufferedReader()?.use { reader ->
                             var count = 0
                             reader.lines().forEach { line ->
-                                if (line.isNotBlank() && count < 5) {
+                                if (line.isNotBlank() && count < 10) {
                                     count++
                                     LogManager.addLog("X: $line")
                                 }
@@ -73,147 +66,65 @@ class XrayCoreService(private val context: Context) {
         }
     }
 
+    // Config JSON com TUN inbound NATIVO do Xray!
     private fun buildXrayJson(c: VlessConfig): String {
         return """
 {
-  "dns": {
-    "hosts": {
-      "ofertas.tim.com.br": ["177.135.216.197", "177.135.216.202"]
-    },
-    "servers": ["1.1.1.1", "8.8.8.8"]
-  },
-  "log": {
-    "loglevel": "warning"
-  },
+  "log": {"loglevel": "warn"},
+  "dns": {"servers": ["1.1.1.1", "8.8.8.8"]},
   "inbounds": [
     {
-      "listen": "127.0.0.1",
-      "port": $SOCKS_PORT,
-      "protocol": "socks",
+      "tag": "tun-in",
+      "protocol": "tun",
       "settings": {
-        "auth": "noauth",
-        "udp": true,
-        "userLevel": 8
+        "mtu": 1500,
+        "stack": "system"
       },
       "sniffing": {
-        "destOverride": ["http", "tls"],
         "enabled": true,
-        "routeOnly": false
-      },
-      "tag": "socks"
+        "destOverride": ["http", "tls"]
+      }
     }
   ],
   "outbounds": [
     {
-      "mux": {
-        "concurrency": -1,
-        "enabled": false
-      },
+      "tag": "proxy",
       "protocol": "vless",
       "settings": {
-        "vnext": [
-          {
-            "address": "${c.server}",
-            "port": ${c.port},
-            "users": [
-              {
-                "encryption": "${c.encryption}",
-                "flow": "${c.flow}",
-                "id": "${c.uuid}",
-                "level": 8
-              }
-            ]
-          }
-        ]
+        "vnext": [{
+          "address": "${c.server}",
+          "port": ${c.port},
+          "users": [{
+            "id": "${c.uuid}",
+            "encryption": "${c.encryption}",
+            "flow": "${c.flow}"
+          }]
+        }]
       },
       "streamSettings": {
         "network": "${c.type}",
         "security": "${c.security}",
-        "sockopt": {
-          "domainStrategy": "UseIP"
-        },
         "tlsSettings": {
-          "allowInsecure": ${c.insecure || c.allowInsecure},
-          "alpn": [${c.alpn.split(",").joinToString(", ") { "\"${it.trim()}\"" }}],
-          "fingerprint": "${c.fp}",
           "serverName": "${c.sni.ifEmpty { c.server }}",
-          "show": false
+          "allowInsecure": ${c.insecure || c.allowInsecure},
+          "alpn": [${c.alpn.split(",").joinToString(", ") { "\"${it.trim()}\"" }}]
         },
         "xhttpSettings": {
           "host": "${c.host}",
           "mode": "${c.mode}",
           "path": "${c.path}"
         }
-      },
-      "tag": "proxy"
+      }
     },
-    {
-      "protocol": "freedom",
-      "settings": {
-        "domainStrategy": "UseIP"
-      },
-      "tag": "direct"
-    },
-    {
-      "protocol": "blackhole",
-      "settings": {
-        "response": {
-          "type": "http"
-        }
-      },
-      "tag": "block"
-    }
+    {"tag": "direct", "protocol": "freedom"}
   ],
-  "policy": {
-    "levels": {
-      "8": {
-        "connIdle": 300,
-        "downlinkOnly": 1,
-        "handshake": 4,
-        "uplinkOnly": 1
-      }
-    },
-    "system": {
-      "statsOutboundUplink": true,
-      "statsOutboundDownlink": true
-    }
-  },
   "routing": {
-    "domainStrategy": "IPIfNonMatch",
     "rules": [
-      {
-        "type": "field",
-        "inboundTag": ["socks"],
-        "outboundTag": "proxy"
-      },
-      {
-        "type": "field",
-        "ip": ["1.1.1.1"],
-        "outboundTag": "proxy",
-        "port": "53"
-      },
-      {
-        "type": "field",
-        "ip": ["8.8.8.8"],
-        "outboundTag": "direct",
-        "port": "53"
-      }
+      {"type": "field", "inboundTag": ["tun-in"], "outboundTag": "proxy"}
     ]
-  },
-  "stats": {}
+  }
 }
 """.trimIndent()
-    }
-
-    private fun findXrayExecutable(configDir: File): String? {
-        try {
-            val nativeLib = File(context.applicationInfo.nativeLibraryDir, "libxray.so")
-            if (nativeLib.exists()) {
-                nativeLib.setExecutable(true, false)
-                return nativeLib.absolutePath
-            }
-        } catch (e: Exception) {}
-        return null
     }
 
     private fun copyAssets(configDir: File) {
@@ -221,9 +132,7 @@ class XrayCoreService(private val context: Context) {
             val dest = File(configDir, name)
             if (!dest.exists()) {
                 try {
-                    context.assets.open(name).use { input ->
-                        dest.outputStream().use { output -> input.copyTo(output) }
-                    }
+                    context.assets.open(name).use { it.copyTo(dest.outputStream()) }
                 } catch (e: Exception) {}
             }
         }

@@ -1,31 +1,19 @@
 package com.vpn.xrayvless
 
-import android.util.Log
 import java.io.FileDescriptor
 
 object Tun2SocksJNI {
-    private const val TAG = "Tun2SocksJNI"
     private var loaded = false
-    private var loadError: String? = null
 
     init {
         try {
-            Log.d(TAG, "Carregando libtun2socks...")
-            System.loadLibrary("tun2socks")
+            System.loadLibrary("tun2socks")      // Lib Go (símbolos StartTun2socks)
+            System.loadLibrary("tun2socks_jni")  // Wrapper JNI (ponte Java->Go)
             loaded = true
-            Log.i(TAG, "✅ libtun2socks.so carregada!")
+            LogManager.addLog("✅ Tun2Socks JNI completo!")
         } catch (e: UnsatisfiedLinkError) {
             loaded = false
-            loadError = "UnsatisfiedLinkError: ${e.message}"
-            Log.e(TAG, loadError!!)
-        } catch (e: SecurityException) {
-            loaded = false
-            loadError = "SecurityException: ${e.message}"
-            Log.e(TAG, loadError!!)
-        } catch (e: Exception) {
-            loaded = false
-            loadError = "${e.javaClass.simpleName}: ${e.message}"
-            Log.e(TAG, loadError!!)
+            LogManager.addLog("❌ ${e.message}")
         }
     }
 
@@ -33,16 +21,13 @@ object Tun2SocksJNI {
     external fun StopTun2socks()
 
     fun isAvailable(): Boolean = loaded
-    fun getError(): String? = loadError
+    fun getError(): String? = if (loaded) null else "JNI não carregado"
 
-    fun getFd(fileDescriptor: FileDescriptor): Int {
+    fun getFd(fd: FileDescriptor): Int {
         return try {
-            val field = FileDescriptor::class.java.getDeclaredField("fd")
-            field.isAccessible = true
-            field.getInt(fileDescriptor)
-        } catch (e: Exception) {
-            Log.e(TAG, "getFd error: ${e.message}")
-            -1
-        }
+            val f = FileDescriptor::class.java.getDeclaredField("fd")
+            f.isAccessible = true
+            f.getInt(fd)
+        } catch (e: Exception) { -1 }
     }
 }

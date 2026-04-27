@@ -8,15 +8,14 @@ jobs:
       - checkout
       - run:
           name: Instalar Ninja
-          command: |
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq ninja-build
-            ninja --version
+          command: sudo apt-get install -y -qq ninja-build
       - run:
-          name: Compilar APK
+          name: Limpar cache e compilar
           command: |
             chmod +x gradlew
-            ./gradlew assembleDebug --no-daemon
+            # Forçar recompilação do CMake
+            rm -rf app/.cxx app/build
+            ./gradlew assembleDebug --no-daemon --rerun-tasks
       - store_artifacts:
           path: app/build/outputs/apk/debug/
           destination: apk/

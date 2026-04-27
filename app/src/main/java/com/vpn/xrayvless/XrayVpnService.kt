@@ -92,7 +92,7 @@ class XrayVpnService : VpnService() {
                         exeFile.absolutePath,
                         "-device", "fd://$fd",
                         "-proxy",  "socks5://127.0.0.1:${XrayCoreService.SOCKS_PORT}",
-                        "-loglevel", "warning"
+                        "-loglevel", "warn"
                     )
                     LogManager.addLog("▶ ${cmd.joinToString(" ")}")
                     val pb = ProcessBuilder(*cmd)

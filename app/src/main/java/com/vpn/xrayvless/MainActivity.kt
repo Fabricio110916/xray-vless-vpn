@@ -130,7 +130,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun startVpn() {
         val json = getSharedPreferences("vpn", MODE_PRIVATE).getString("config", null) ?: return
-        val intent = Intent(this, XrayVpnService::class.java).putExtra("vless_config", json)
+        val intent = Intent(this, V2RayVpnService::class.java).putExtra("vless_config", json)
         ContextCompat.startForegroundService(this, intent)
         bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
         serviceBound = true
@@ -148,7 +148,7 @@ class MainActivity : AppCompatActivity() {
             }
         } catch (e: Exception) {}
         
-        stopService(Intent(this, XrayVpnService::class.java))
+        stopService(Intent(this, V2RayVpnService::class.java))
         isConnected = false
         updateStatus()
         LogManager.addLog("✅ Desconectado")

@@ -22,6 +22,7 @@ class XrayVpnService : VpnService() {
     private var vpnInterface: ParcelFileDescriptor? = null
     @Volatile private var running = false
     private var xray: XrayCoreService? = null
+    private var tunProcess: java.lang.Process? = null
 
     override fun onBind(i: Intent?) = LocalBinder()
 
@@ -69,7 +70,6 @@ class XrayVpnService : VpnService() {
             vpnInterface = builder.establish()
             if (vpnInterface == null) { stopSelf(); return START_NOT_STICKY }
             
-            // Proteger SOCKS
             try {
                 val sock = Socket()
                 sock.connect(InetSocketAddress("127.0.0.1", XrayCoreService.SOCKS_PORT), 5000)
@@ -79,6 +79,7 @@ class XrayVpnService : VpnService() {
             
             running = true
             
+            // Obter FD
             var fd = -1
             try {
                 val m = ParcelFileDescriptor::class.java.getDeclaredMethod("getFd")
@@ -89,45 +90,61 @@ class XrayVpnService : VpnService() {
             LogManager.addLog("FD=$fd")
             
             if (fd > 0) {
-                val nativeDir = File(applicationInfo.nativeLibraryDir)
-                val tunExe = File(nativeDir, "libtun2socks.so")
+                // Usar o executável CLI tun2socks (copiar do assets)
+                val tunExe = File(filesDir, "tun2socks")
+                if (!tunExe.exists()) {
+                    assets.open("tun2socks").use { it.copyTo(tunExe.outputStream()) }
+                    tunExe.setExecutable(true)
+                }
+                
+                // Também tentar do nativeLibraryDir
+                val nativeExe = File(applicationInfo.nativeLibraryDir, "tun2socks-arm64")
+                
+                val exePath = if (nativeExe.exists()) nativeExe.absolutePath else tunExe.absolutePath
+                
+                LogManager.addLog("Exe: $exePath exists=${File(exePath).exists()}")
+                
                 val socksAddr = "127.0.0.1:${XrayCoreService.SOCKS_PORT}"
                 
-                if (tunExe.exists()) {
-                    Thread({
-                        try {
-                            val cmd = arrayOf(tunExe.absolutePath, "-fd", fd.toString(), "-socks", socksAddr, "-mtu", "1500")
-                            LogManager.addLog("🚀 ${cmd.joinToString(" ")}")
-                            val proc = Runtime.getRuntime().exec(cmd)
-                            LogManager.addLog("✅ TUN executando!")
-                            
-                            // Consumir stdout para não travar
-                            Thread({ proc.inputStream.bufferedReader().use { it.readLine() } }).start()
-                            Thread({ proc.errorStream.bufferedReader().use { it.readLine() } }).start()
-                            
-                            proc.waitFor()
-                            LogManager.addLog("TUN finalizado: ${proc.exitValue()}")
-                        } catch (e: Exception) {
-                            LogManager.addLog("TUN: ${e.message}")
-                        }
-                    }, "tun2socks").start()
-                    LogManager.addLog("✅ Thread TUN iniciada")
-                }
+                Thread({
+                    try {
+                        val cmd = arrayOf(exePath, "-fd", fd.toString(), "-socks", socksAddr, "-mtu", "1500")
+                        LogManager.addLog("🚀 ${cmd.joinToString(" ")}")
+                        tunProcess = Runtime.getRuntime().exec(cmd)
+                        
+                        // Consumir streams em background
+                        Thread({ tunProcess?.inputStream?.bufferedReader()?.use { it.readLine() } }).start()
+                        Thread({ tunProcess?.errorStream?.bufferedReader()?.use { 
+                            var line: String?
+                            while (it.readLine().also { line = it } != null) {
+                                if (line!!.isNotBlank()) LogManager.addLog("TUN: $line")
+                            }
+                        }}).start()
+                        
+                        LogManager.addLog("✅ TUN rodando!")
+                        val exit = tunProcess?.waitFor() ?: -1
+                        LogManager.addLog("TUN fim: $exit")
+                    } catch (e: Exception) {
+                        LogManager.addLog("TUN err: ${e.message}")
+                    }
+                }, "tun2socks").start()
             }
             
         } catch (e: Exception) {
             LogManager.addLog("❌ ${e.message}")
             stopSelf()
         }
-        return START_STICKY
+        return START_NOT_STICKY  // NÃO usar START_STICKY - permite que o serviço pare
     }
 
     override fun onDestroy() {
+        LogManager.addLog(">>> onDestroy")
         running = false
-        try { Tun2SocksJNI.StopTun2socks() } catch (e: Exception) {}
+        tunProcess?.destroy()
         xray?.stop()
         try { vpnInterface?.close() } catch (e: Exception) {}
         stopForeground(STOP_FOREGROUND_REMOVE)
+        LogManager.addLog("✅ VPN destruída")
         super.onDestroy()
     }
 }

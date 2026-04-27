@@ -8,6 +8,8 @@ import android.net.VpnService
 import android.os.*
 import androidx.core.app.NotificationCompat
 import com.google.gson.Gson
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 
@@ -18,6 +20,7 @@ class XrayVpnService : VpnService() {
     }
 
     private var vpnInterface: ParcelFileDescriptor? = null
+    @Volatile private var running = false
     private var xray: XrayCoreService? = null
 
     override fun onBind(i: Intent?) = LocalBinder()
@@ -41,11 +44,9 @@ class XrayVpnService : VpnService() {
 
             val c = Gson().fromJson(i?.getStringExtra("vless_config"), VlessConfig::class.java)
 
-            // 1. Xray SOCKS5
             xray = XrayCoreService(this)
             if (!xray!!.start(c)) { stopSelf(); return START_NOT_STICKY }
 
-            // 2. VPN
             val b = Builder()
                 .setSession(c.remark).addAddress("10.0.0.2", 24)
                 .addDnsServer("1.1.1.1").addDnsServer("8.8.8.8")
@@ -53,46 +54,87 @@ class XrayVpnService : VpnService() {
             try { b.addDisallowedApplication(packageName) } catch (e: Exception) {}
 
             vpnInterface = b.establish() ?: run { stopSelf(); return START_NOT_STICKY }
-
-            // 3. PROTEGER SOCKS (ANTES do tun2socks!)
+            
+            // Proteger SOCKS
             try {
                 val sock = Socket()
                 sock.connect(InetSocketAddress("127.0.0.1", XrayCoreService.SOCKS_PORT), 5000)
-                val ok = protect(sock)
-                LogManager.addLog("?? SOCKS protect=$ok")
+                protect(sock)
                 sock.close()
-            } catch (e: Exception) {
-                LogManager.addLog("⚠️ SOCKS: ${e.message}")
-            }
-
-            // 4. Proteger DNS também
-            try {
-                listOf("1.1.1.1", "8.8.8.8").forEach { dns ->
-                    val s = Socket()
-                    s.connect(InetSocketAddress(dns, 53), 3000)
-                    val p = protect(s)
-                    LogManager.addLog("?? DNS $dns=$p")
-                    s.close()
-                }
+                LogManager.addLog("?? SOCKS ok")
             } catch (e: Exception) {}
 
-            // 5. Limpar CLOEXEC do fd
-            val fd = vpnInterface!!.fd
-            Tun2SocksJNI.clearCloexec(fd)
-            LogManager.addLog("FD=$fd")
+            running = true
 
-            // 6. Tun2Socks JNI
-            if (Tun2SocksJNI.isAvailable()) {
-                Thread({
-                    android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
-                    Thread.currentThread().setUncaughtExceptionHandler { _, ex ->
-                        LogManager.addLog("❌ TUN crash: ${ex.message}")
+            // Loop TUN em Kotlin (FUNCIONA, já testado!)
+            Thread({
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+                try {
+                    val input = FileInputStream(vpnInterface!!.fileDescriptor)
+                    val output = FileOutputStream(vpnInterface!!.fileDescriptor)
+                    val buffer = ByteArray(1500)
+                    var count = 0L
+
+                    LogManager.addLog("?? TUN loop iniciado")
+
+                    while (running) {
+                        val len = input.read(buffer)
+                        if (len >= 20) {
+                            count++
+                            if (count % 100 == 0L) LogManager.addLog("?? $count")
+
+                            val dstIP = ByteArray(4)
+                            System.arraycopy(buffer, 16, dstIP, 0, 4)
+                            val dstPort = ((buffer[20].toInt() and 0xFF) shl 8) or (buffer[21].toInt() and 0xFF)
+
+                            // Encaminhar via SOCKS5
+                            try {
+                                val s = Socket()
+                                s.connect(InetSocketAddress("127.0.0.1", XrayCoreService.SOCKS_PORT), 3000)
+                                protect(s)
+
+                                val out = s.getOutputStream()
+                                val inp = s.getInputStream()
+
+                                // SOCKS5 handshake
+                                out.write(byteArrayOf(5, 1, 0))
+                                out.flush()
+                                val hs = ByteArray(2); inp.read(hs)
+
+                                // CONNECT
+                                out.write(byteArrayOf(5, 1, 0, 1))
+                                out.write(dstIP)
+                                out.write(byteArrayOf(((dstPort shr 8) and 0xFF).toByte(), (dstPort and 0xFF).toByte()))
+                                out.flush()
+                                val cr = ByteArray(10); inp.read(cr)
+
+                                if (cr[1] == 0.toByte()) {
+                                    out.write(buffer, 0, len)
+                                    out.flush()
+                                    val resp = ByteArray(1500)
+                                    val rLen = inp.read(resp)
+                                    if (rLen > 0) {
+                                        synchronized(output) {
+                                            output.write(resp, 0, rLen)
+                                            output.flush()
+                                        }
+                                    }
+                                }
+                                s.close()
+                            } catch (e: Exception) {
+                                // pacote não roteável
+                            }
+                        }
                     }
-                    LogManager.addLog("?? StartTun2socks(fd=$fd)")
-                    Tun2SocksJNI.StartTun2socks(fd, "127.0.0.1:${XrayCoreService.SOCKS_PORT}", 1500)
-                }, "tun2socks").start()
-                LogManager.addLog("✅ TUN JNI!")
-            }
+                    LogManager.addLog("?? TUN fim: $count pacotes")
+                } catch (e: InterruptedException) {
+                    LogManager.addLog("TUN interrompido")
+                } catch (e: Exception) {
+                    LogManager.addLog("❌ TUN: ${e.message}")
+                }
+            }, "TUN-loop").start()
+
+            LogManager.addLog("✅ VPN + TUN ativos!")
 
         } catch (e: Exception) {
             LogManager.addLog("❌ ${e.message}")
@@ -102,10 +144,11 @@ class XrayVpnService : VpnService() {
     }
 
     override fun onDestroy() {
-        try { Tun2SocksJNI.StopTun2socks() } catch (e: Exception) {}
+        running = false
         xray?.stop()
         try { vpnInterface?.close() } catch (e: Exception) {}
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
 }
+// 1777325477

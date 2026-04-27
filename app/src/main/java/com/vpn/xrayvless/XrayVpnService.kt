@@ -67,42 +67,46 @@ class XrayVpnService : VpnService() {
             
             if (fd > 0) {
                 val socksAddr = "127.0.0.1:${XrayCoreService.SOCKS_PORT}"
-                val nativeExe = File(applicationInfo.nativeLibraryDir, "tun2socks-arm64")
                 
-                LogManager.addLog("Exe: ${nativeExe.absolutePath} existe=${nativeExe.exists()}")
+                // Procurar executável em vários lugares
+                var exePath = ""
+                val paths = listOf(
+                    File(applicationInfo.nativeLibraryDir, "tun2socks-arm64"),
+                    File(filesDir, "tun2socks")
+                )
                 
-                if (nativeExe.exists()) {
+                for (p in paths) {
+                    if (p.exists()) { exePath = p.absolutePath; break }
+                }
+                
+                // Se não achou, copiar do assets
+                if (exePath.isEmpty()) {
+                    try {
+                        val dest = File(filesDir, "tun2socks")
+                        assets.open("tun2socks").use { it.copyTo(dest.outputStream()) }
+                        dest.setExecutable(true)
+                        exePath = dest.absolutePath
+                        LogManager.addLog("📦 Copiado do assets: ${dest.length()} bytes")
+                    } catch (e: Exception) {
+                        LogManager.addLog("❌ Assets: ${e.message}")
+                    }
+                }
+                
+                LogManager.addLog("Exe: $exePath")
+                
+                if (exePath.isNotEmpty()) {
                     Thread({
                         try {
-                            val cmd = arrayOf(
-                                "/system/bin/linker64",
-                                nativeExe.absolutePath,
-                                "-fd", fd.toString(),
-                                "-socks", socksAddr,
-                                "-mtu", "1500"
-                            )
+                            val cmd = arrayOf("/system/bin/linker64", exePath, "-fd", fd.toString(), "-socks", socksAddr, "-mtu", "1500")
                             LogManager.addLog("🚀 ${cmd.joinToString(" ")}")
                             val proc = Runtime.getRuntime().exec(cmd)
-                            LogManager.addLog("✅ TUN via linker64!")
-                            
-                            Thread({ 
-                                var line: String?
-                                proc.errorStream.bufferedReader().use { 
-                                    while (it.readLine().also { line = it } != null) {
-                                        LogManager.addLog("TUN: $line")
-                                    }
-                                }
-                            }).start()
-                            
+                            LogManager.addLog("✅ TUN rodando!")
+                            Thread({ proc.errorStream.bufferedReader().use { var l: String?; while (it.readLine().also { l = it } != null) { LogManager.addLog("TUN: $l") } } }).start()
                             proc.waitFor()
                             LogManager.addLog("TUN fim: ${proc.exitValue()}")
-                        } catch (e: Exception) {
-                            LogManager.addLog("TUN: ${e.message}")
-                        }
-                    }, "tun2socks").start()
-                    LogManager.addLog("✅ Plano B ativo!")
-                } else {
-                    LogManager.addLog("❌ tun2socks-arm64 sumiu!")
+                        } catch (e: Exception) { LogManager.addLog("TUN: ${e.message}") }
+                    }, "tun").start()
+                    LogManager.addLog("✅ TUN iniciado!")
                 }
             }
         } catch (e: Exception) { LogManager.addLog("❌ ${e.message}"); stopSelf() }
@@ -117,4 +121,3 @@ class XrayVpnService : VpnService() {
         super.onDestroy()
     }
 }
-// 1777313917271524621

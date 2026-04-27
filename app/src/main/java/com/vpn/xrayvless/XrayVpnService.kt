@@ -11,6 +11,7 @@ import androidx.core.app.NotificationCompat
 import com.google.gson.Gson
 import java.io.FileDescriptor
 import java.net.*
+import java.nio.channels.DatagramChannel
 
 class XrayVpnService : VpnService() {
 

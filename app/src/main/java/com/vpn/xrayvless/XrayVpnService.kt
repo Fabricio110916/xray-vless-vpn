@@ -9,6 +9,7 @@ import android.net.VpnService
 import android.os.*
 import androidx.core.app.NotificationCompat
 import com.google.gson.Gson
+import java.io.FileDescriptor
 import java.net.InetSocketAddress
 import java.net.Socket
 
@@ -68,7 +69,6 @@ class XrayVpnService : VpnService() {
             vpnInterface = builder.establish()
             if (vpnInterface == null) { stopSelf(); return START_NOT_STICKY }
             
-            // Proteger SOCKS
             try {
                 val sock = Socket()
                 sock.connect(InetSocketAddress("127.0.0.1", XrayCoreService.SOCKS_PORT), 5000)
@@ -78,49 +78,34 @@ class XrayVpnService : VpnService() {
             
             running = true
             
-            // Obter FD pelo método que funciona
+            // Obter FD
             var fd = -1
-            
-            // Método 1: ParcelFileDescriptor.getFd()
             try {
                 val m = ParcelFileDescriptor::class.java.getDeclaredMethod("getFd")
                 m.isAccessible = true
                 fd = m.invoke(vpnInterface) as Int
-                LogManager.addLog("📎 FD método 1: $fd")
-            } catch (e: Exception) {
-                LogManager.addLog("M1: ${e.message}")
-            }
+            } catch (e: Exception) {}
             
-            // Método 2: detachFd
             if (fd < 0) {
-                try {
-                    fd = vpnInterface!!.detachFd()
-                    LogManager.addLog("📎 FD método 2: $fd")
-                } catch (e: Exception) {
-                    LogManager.addLog("M2: ${e.message}")
-                }
+                try { fd = vpnInterface!!.detachFd() } catch (e: Exception) {}
             }
             
-            // Método 3: campo fd
             if (fd < 0) {
                 try {
                     val f = FileDescriptor::class.java.getDeclaredField("fd")
                     f.isAccessible = true
                     fd = f.getInt(vpnInterface!!.fileDescriptor)
-                    LogManager.addLog("📎 FD método 3: $fd")
-                } catch (e: Exception) {
-                    LogManager.addLog("M3: ${e.message}")
-                }
+                } catch (e: Exception) {}
             }
+            
+            LogManager.addLog("FD=$fd Tun=${Tun2SocksJNI.isAvailable()}")
             
             if (fd >= 0 && Tun2SocksJNI.isAvailable()) {
                 val finalFd = fd
                 Thread({
                     Tun2SocksJNI.StartTun2socks(finalFd, "127.0.0.1:${XrayCoreService.SOCKS_PORT}", 1500)
-                }, "Tun2Socks").start()
-                LogManager.addLog("✅ Tun2Socks iniciado com fd=$finalFd")
-            } else {
-                LogManager.addLog("❌ FD=$fd Lib=${Tun2SocksJNI.isAvailable()}")
+                }).start()
+                LogManager.addLog("✅ Tun2Socks iniciado")
             }
             
         } catch (e: Exception) {

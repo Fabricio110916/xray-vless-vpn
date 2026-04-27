@@ -53,7 +53,6 @@ class XrayVpnService : VpnService() {
             
             xray = XrayCoreService(this)
             if (!xray!!.start(c)) { stopSelf(); return START_NOT_STICKY }
-            LogManager.addLog("✅ Xray OK")
             
             val builder = Builder()
                 .setSession(c.remark)
@@ -68,7 +67,6 @@ class XrayVpnService : VpnService() {
             
             vpnInterface = builder.establish()
             if (vpnInterface == null) { stopSelf(); return START_NOT_STICKY }
-            LogManager.addLog("✅ VPN estabelecida")
             
             // Proteger SOCKS
             try {
@@ -76,42 +74,53 @@ class XrayVpnService : VpnService() {
                 sock.connect(InetSocketAddress("127.0.0.1", XrayCoreService.SOCKS_PORT), 5000)
                 protect(sock)
                 sock.close()
-                LogManager.addLog("✅ SOCKS protegido")
-            } catch (e: Exception) {
-                LogManager.addLog("⚠️ SOCKS: ${e.message}")
-            }
+            } catch (e: Exception) {}
             
             running = true
             
-            // Tun2Socks nativo
-            LogManager.addLog("Tun2Socks disponível: ${Tun2SocksJNI.isAvailable()}")
+            // Obter FD pelo método que funciona
+            var fd = -1
             
-            if (Tun2SocksJNI.isAvailable()) {
-                val fd = Tun2SocksJNI.getFd(vpnInterface!!.fileDescriptor)
-                LogManager.addLog("FD obtido: $fd")
-                
-                if (fd >= 0) {
-                    Thread({
-                        LogManager.addLog("Thread Tun2Socks iniciando...")
-                        try {
-                            Tun2SocksJNI.StartTun2socks(
-                                fd,
-                                "127.0.0.1:${XrayCoreService.SOCKS_PORT}",
-                                1500
-                            )
-                            LogManager.addLog("StartTun2socks retornou")
-                        } catch (e: Exception) {
-                            LogManager.addLog("❌ Tun2Socks: ${e.message}")
-                        }
-                    }, "Tun2Socks").start()
-                    
-                    LogManager.addLog("✅ Tun2Socks nativo iniciado!")
-                } else {
-                    LogManager.addLog("❌ FD inválido: $fd")
+            // Método 1: ParcelFileDescriptor.getFd()
+            try {
+                val m = ParcelFileDescriptor::class.java.getDeclaredMethod("getFd")
+                m.isAccessible = true
+                fd = m.invoke(vpnInterface) as Int
+                LogManager.addLog("📎 FD método 1: $fd")
+            } catch (e: Exception) {
+                LogManager.addLog("M1: ${e.message}")
+            }
+            
+            // Método 2: detachFd
+            if (fd < 0) {
+                try {
+                    fd = vpnInterface!!.detachFd()
+                    LogManager.addLog("📎 FD método 2: $fd")
+                } catch (e: Exception) {
+                    LogManager.addLog("M2: ${e.message}")
                 }
+            }
+            
+            // Método 3: campo fd
+            if (fd < 0) {
+                try {
+                    val f = FileDescriptor::class.java.getDeclaredField("fd")
+                    f.isAccessible = true
+                    fd = f.getInt(vpnInterface!!.fileDescriptor)
+                    LogManager.addLog("📎 FD método 3: $fd")
+                } catch (e: Exception) {
+                    LogManager.addLog("M3: ${e.message}")
+                }
+            }
+            
+            if (fd >= 0 && Tun2SocksJNI.isAvailable()) {
+                val finalFd = fd
+                Thread({
+                    Tun2SocksJNI.StartTun2socks(finalFd, "127.0.0.1:${XrayCoreService.SOCKS_PORT}", 1500)
+                }, "Tun2Socks").start()
+                LogManager.addLog("✅ Tun2Socks iniciado com fd=$finalFd")
             } else {
-                LogManager.addLog("❌ libtun2socks.so não carregou")
-                LogManager.addLog("Erro: ${Tun2SocksJNI.getError()}")
+                LogManager.addLog("❌ FD=$fd Lib=${Tun2SocksJNI.isAvailable()}")
             }
             
         } catch (e: Exception) {
@@ -122,21 +131,11 @@ class XrayVpnService : VpnService() {
     }
 
     override fun onDestroy() {
-        LogManager.addLog(">>> onDestroy")
         running = false
-        
-        try {
-            Tun2SocksJNI.StopTun2socks()
-            LogManager.addLog("StopTun2socks OK")
-        } catch (e: Exception) {
-            LogManager.addLog("Stop err: ${e.message}")
-        }
-        
+        try { Tun2SocksJNI.StopTun2socks() } catch (e: Exception) {}
         xray?.stop()
         try { vpnInterface?.close() } catch (e: Exception) {}
         stopForeground(STOP_FOREGROUND_REMOVE)
-        LogManager.addLog("✅ VPN destruída")
         super.onDestroy()
     }
 }
-// Build Sun Apr 26 10:38:59 PM -03 2026
